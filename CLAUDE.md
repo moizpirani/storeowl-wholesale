@@ -96,7 +96,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   Prices tab says "<license> ended … · you'll be warned". All license issues are orange. Still to come: the Counter's "Sell anyway" box with a
   reason, written to History (Phase 2), license reminder emails to stores (needs a sender), volume price breaks.
 - **Phase 1, part 5 = item photos (built 2026-11-26, Moiz approved the pictures, then "yes"; migration `phase1_item_photos_2026_11_26`
-  NOT YET on the test database — the database tool's approval question went unanswered; branch `test` NOT pushed until it is):**
+  on the test database; ON TEST since 2026-11-26, Moiz: "put it on test"):**
   one photo per item (sizes share it), shrunk to ≤ 800 px JPEG on the device (`readCopy(file, 800, true)`), PUBLIC bucket `item-photos`
   `<company>/<item>-<time>.jpg` (product photos aren't private; invoices and the store app show them), `items.photo`, `item_photo_set`
   (managers+, path must be under that company / item, '' takes it off; logged), `photo_url` added in src/db.js. Items list: 40 px photo
