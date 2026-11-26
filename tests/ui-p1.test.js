@@ -82,6 +82,37 @@ test('price levels, items and customers', async () => {
   assert.match($('#it-err').textContent, /already on Seneca/);
   $('#it-close').click(); await tick();
   assert.match($('th:nth-child(5)').textContent, /Route 1/);
+  // Item photos: add one to Seneca; it shows on the item and in the list; "No photo" finds the rest.
+  $('[data-itrow]').click(); await tick(); checkTags('item panel with no photo');
+  const phIn = $('[data-itph="pick"]');
+  Object.defineProperty(phIn, 'files', { value: [new dom.window.File(['x'], 'seneca.jpg', { type: 'image/jpeg' })] });
+  phIn.dispatchEvent(new dom.window.Event('change'));
+  for (let i = 0; i < 20 && !db.S.items[0].photo; i++) await tick(2);
+  await tick(3);
+  assert.ok(db.S.items[0].photo.endsWith('.jpg'));
+  assert.ok($('#it-panel .pbig'), 'the photo shows on the item'); checkTags('item panel with a photo');
+  assert.ok($('#it-rows .tph'), 'and in the list');
+  $('#it-phrm').click(); await tick(); $('#it-phrm2').click(); await tick(3);
+  assert.equal(db.S.items[0].photo, '');
+  $('#it-close').click(); await tick();
+  $('[data-itf="nophoto"]').click(); await tick();
+  assert.match($('#it-rows').textContent, /Seneca/);
+  $('[data-itf="all"]').click(); await tick();
+  // Many at once: a file named with the UPC matches by itself; another needs the item picked.
+  $('#it-photos').click(); await tick(); checkTags('add photos');
+  const many = $('#ph-pick');
+  Object.defineProperty(many, 'files', { value: [new dom.window.File(['x'], '014700319017.jpg', { type: 'image/jpeg' }), new dom.window.File(['y'], 'IMG_2291.jpg', { type: 'image/jpeg' })] });
+  many.dispatchEvent(new dom.window.Event('change'));
+  for (let i = 0; i < 20 && A.ph.rows.length < 2; i++) await tick(2);
+  await tick(3); checkTags('add photos list');
+  assert.match($('#ph-ov').textContent, /Matched by UPC/);
+  assert.match($('#ph-ov').textContent, /1 ready · 1 need you/);
+  $('[data-phrm="1"]').click(); await tick();
+  $('#ph-save').click();
+  for (let i = 0; i < 20 && A.ph; i++) await tick(2);
+  assert.equal(A.ph, null, 'closes when every photo is saved');
+  assert.ok(db.S.items[0].photo, 'Seneca got the photo');
+
   // Search filters in place.
   type('#it-q', 'nothing like this'); assert.match($('#it-rows').textContent, /No items match/);
   type('#it-q', '31901'); assert.match($('#it-rows').textContent, /Seneca/);

@@ -355,3 +355,22 @@ h2.mt{margin-top:18px}
 .lrk{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}
 .lrk input{margin-top:3px}.lrk b{display:block;font-size:14px}.lrk small{display:block;font-size:12px;color:var(--muted)}
 @media (max-width:700px){.lrks{grid-template-columns:1fr}.licbar{flex-wrap:wrap}}
+
+/* Item photos: small one in the list, big one on the item, and adding many at once */
+.itn{display:flex;gap:12px;align-items:center;min-width:0}
+.tph,.tph0{width:40px;height:40px;border-radius:7px;flex:none}
+.tph{border:1px solid var(--line);object-fit:cover;background:#EEF1F4}
+.tph0{border:1px dashed var(--line2);display:flex;align-items:center;justify-content:center;color:#9AA4B2;font-size:18px}
+.pbox{display:flex;gap:16px;align-items:center;margin:0 0 14px}
+.pbig{width:112px;height:112px;border-radius:10px;border:1px solid var(--line);object-fit:cover;background:#EEF1F4;flex:none}
+.pbig0{width:112px;height:112px;border-radius:10px;border:2px dashed var(--line2);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);font-size:13px;font-weight:600;flex:none}
+.pbig0 .plus{font-size:26px;line-height:1}
+.pbtns{display:flex;flex-direction:column;gap:8px;min-width:0}.pbtns small{color:var(--muted);font-size:12px}
+.phov{position:fixed;inset:0;background:rgba(15,27,45,.45);display:flex;align-items:flex-start;justify-content:center;padding:60px 16px;z-index:50;overflow:auto}
+.phbox{width:min(860px,100%);padding:22px 24px}
+.phbox h2{font-size:19px;margin:0 0 4px}
+.phdrop{display:block;position:relative;border:2px dashed var(--line2);border-radius:10px;padding:18px;text-align:center;color:var(--muted);margin:12px 0 14px;cursor:pointer}
+.phdrop b{color:var(--teal)}.phdrop.on{border-color:var(--teal);background:#E6F4F1}
+.phdrop input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.phlist{max-height:50vh;overflow:auto}
+.phsum{margin-right:auto}

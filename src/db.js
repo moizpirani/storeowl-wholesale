@@ -18,6 +18,8 @@ export function makeDb(sb) {
     (data || []).forEach((d, i) => { if (d && d.signedUrl) list[i].url = d.signedUrl; });
     return c;
   }
+  // Item photos are public (invoices and the store app show them): each gets its plain web address.
+  const pub = (it) => { if (it && it.photo) it.photo_url = sb.storage.from('item-photos').getPublicUrl(it.photo).data.publicUrl; return it; };
   return {
     async session() { const { data } = await sb.auth.getSession(); return data.session ? { email: data.session.user.email } : null; },
     onAuth(fn) { sb.auth.onAuthStateChange(function (ev, s) { fn(s ? { email: s.user.email } : null); }); },
@@ -42,8 +44,17 @@ export function makeDb(sb) {
     history: (id) => rpc('change_log_list', { p_company: id, p_limit: 50 }),
     levelsSet: (id, list) => rpc('levels_set', { p_company: id, p_list: list }),
     settingsSet: (id, p) => rpc('company_settings_set', { p_company: id, p }),
-    items: (id) => rpc('items_list', { p_company: id }),
-    itemPut: (id, p) => rpc('item_put', { p_company: id, p }),
+    items: async (id) => (await rpc('items_list', { p_company: id })).map(pub),
+    itemPut: async (id, p) => pub(await rpc('item_put', { p_company: id, p })),
+    // A photo goes up first, then the item points to it. No photo (f = null) takes it off.
+    async itemPhoto(id, item, f) {
+      if (!f) return pub(await rpc('item_photo_set', { p_company: id, p_item: item, p_path: '' }));
+      const blob = await (await fetch(f.url)).blob();
+      const path = id + '/' + item + '-' + Date.now() + '.jpg';
+      const up = await sb.storage.from('item-photos').upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+      if (up.error) throw new Error(plain(up.error.message));
+      return pub(await rpc('item_photo_set', { p_company: id, p_item: item, p_path: path }));
+    },
     customers: (id) => rpc('customers_list', { p_company: id }),
     customer: async (id, cust) => withUrls(await rpc('customer_get', { p_company: id, p_id: cust })),
     customerPut: async (id, p) => withUrls(await rpc('customer_put', { p_company: id, p })),
@@ -262,6 +273,15 @@ export function makeFake(opts) {
         return { id: z.id || id(), name: z.name.trim(), n: z.n, upc: cleanUpc(z.upc), cost: z.cost, prices: pr };
       });
       log(cid, isnew ? 'item added' : 'item changed', { item: it.id, name: it.name, before });
+      return itemOut(it, true);
+    },
+    async itemPhoto(cid, itemId, f) {
+      need(cid, 'manager');
+      const it = S.items.find((x) => x.id === itemId && x.company_id === cid);
+      if (!it) throw new Error('Item not found');
+      const before = it.photo || '';
+      it.photo = f ? cid + '/' + it.id + '-' + Date.now() + '.jpg' : ''; it.photo_url = f ? f.url : '';
+      log(cid, f ? 'item photo added' : 'item photo removed', { item: it.id, name: it.name, before, after: it.photo });
       return itemOut(it, true);
     },
     async customers(cid) {

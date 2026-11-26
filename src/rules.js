@@ -192,3 +192,25 @@ export function initials(name) {
   const w = String(name || '').replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
   return ((w[0] || '?')[0] + (w[1] ? w[1][0] : '')).toUpperCase();
 }
+
+// Same UPC written another way: leading zeros dropped, or the last (check) digit left off (old systems print 10–11 digits).
+export function upcSame(a, b) {
+  a = cleanUpc(a); b = cleanUpc(b);
+  if (!a || !b) return false;
+  const z = (s) => s.replace(/^0+/, '');
+  if (z(a) === z(b)) return true;
+  if (b.length >= 12 && z(b.slice(0, -1)) === z(a)) return true;
+  if (a.length >= 12 && z(a.slice(0, -1)) === z(b)) return true;
+  return false;
+}
+// Which item a photo file is for, from its name: the UPC of any size, or the item #. null = the person picks.
+export function photoMatch(fileName, items) {
+  const base = String(fileName || '').replace(/\.[a-z0-9]+$/i, '').trim();
+  const digits = base.replace(/[\s-]/g, '');
+  if (/^\d{6,14}$/.test(digits)) {
+    const it = (items || []).find((i) => (i.sizes || []).some((s) => upcSame(digits, s.upc)));
+    if (it) return { id: it.id, how: 'upc' };
+  }
+  const it2 = base && (items || []).find((i) => i.item_no && i.item_no.trim().toLowerCase() === base.toLowerCase());
+  return it2 ? { id: it2.id, how: 'item' } : null;
+}

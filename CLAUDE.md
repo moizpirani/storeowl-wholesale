@@ -94,4 +94,13 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   `#cu-licbar` (what's missing or ended, "You can still sell to them", **Email the store** = mailto with the request, **Upload now** = add a copy,
   then the Licenses tab opens with the copy panel); Licenses tab lists needed ones first with what they cover, others say "Not needed";
   Prices tab says "<license> ended … · you'll be warned". All license issues are orange. Still to come: the Counter's "Sell anyway" box with a
-  reason, written to History (Phase 2), license reminder emails to stores (needs a sender), volume price breaks, item photos.
+  reason, written to History (Phase 2), license reminder emails to stores (needs a sender), volume price breaks.
+- **Phase 1, part 5 = item photos (built 2026-11-26, Moiz approved the pictures, then "yes"; migration `phase1_item_photos_2026_11_26`
+  NOT YET on the test database — the database tool's approval question went unanswered; branch `test` NOT pushed until it is):**
+  one photo per item (sizes share it), shrunk to ≤ 800 px JPEG on the device (`readCopy(file, 800, true)`), PUBLIC bucket `item-photos`
+  `<company>/<item>-<time>.jpg` (product photos aren't private; invoices and the store app show them), `items.photo`, `item_photo_set`
+  (managers+, path must be under that company / item, '' takes it off; logged), `photo_url` added in src/db.js. Items list: 40 px photo
+  or a dashed "+", **No photo** filter (a missing photo is NOT "Needs you"). Item panel: photo at the top of Details — Take a photo
+  (phone camera) / Pick a photo, or Take or pick a new photo / Remove photo (two taps); a new item keeps the photo until it's saved.
+  **Add photos** (`#it-photos`): pick or drop many photos; a file named with any size's UPC (leading zeros or the check digit may be
+  missing, `upcSame`) or the item # matches by itself (`photoMatch`), others get "Pick the item"; Save N photos (last one wins for one item).

@@ -7,7 +7,7 @@ import { stateName } from './states.js';
 import {
   CATEGORIES, catName, TERMS, termName, LICENSES, licName, SIZE_NAMES, settingsOf, cleanUpc, upcShow, num, money, margin,
   licState, custIssues, licNeeded, custNeeds, licProblems, problemText, saleWarnings, custStateOf, licNeedCheck,
-  suggestedLic, LIC_COVER_TEXT, SUGGEST_NOTE, itemIssues, mainSize, sizeLine, itemCheck, custCheck, levelsCheck, todayIso, shortDate, initials
+  suggestedLic, LIC_COVER_TEXT, SUGGEST_NOTE, photoMatch, itemIssues, mainSize, sizeLine, itemCheck, custCheck, levelsCheck, todayIso, shortDate, initials
 } from './rules.js';
 
 const PAGE = 200;
@@ -66,12 +66,13 @@ export function makeCatalog(X) {
       .filter((it) => (S.f === 'off' ? it.active === false : true))
       .filter((it) => !S.cat || it.category === S.cat)
       .filter((it) => S.f !== 'need' || itemIssues(it, L).length)
+      .filter((it) => S.f !== 'nophoto' || !it.photo_url)
       .filter((it) => itemMatch(it, S.q));
   }
   function itemRow(it, narrow) {
     const L = levels(), z = mainSize(it) || {}, iss = itemIssues(it, L);
-    const name = '<button class="nmb" data-itopen="' + it.id + '" data-guide="items-list-open"><i class="d' + (iss.length ? '' : ' no') + '"></i><b>' + esc(it.name) + '</b></button>' +
-      '<span class="sub">' + esc(sizeLine(z, it.unit)) + (iss.length ? ' · <span class="miss">' + esc(iss.map((x) => x.t).join(', ')) + '</span>' : '') + '</span>';
+    const name = '<div class="itn">' + thumb(it) + '<div><button class="nmb" data-itopen="' + it.id + '" data-guide="items-list-open"><i class="d' + (iss.length ? '' : ' no') + '"></i><b>' + esc(it.name) + '</b></button>' +
+      '<span class="sub">' + esc(sizeLine(z, it.unit)) + (iss.length ? ' · <span class="miss">' + esc(iss.map((x) => x.t).join(', ')) + '</span>' : '') + '</span></div></div>';
     const cost = it.cost_hidden ? '' : '<td class="n">' + (z.cost != null ? money$(z.cost) : '<span class="miss">No cost</span>') + '</td>';
     const p1 = z.prices ? z.prices[L[0] && L[0].n] : null;
     if (narrow) return '<tr class="' + (A.it.sel === it.id ? 'pick' : '') + '" data-itrow="' + it.id + '"><td>' + name + '</td>' + cost + '<td class="n"><b>' + (p1 != null ? money$(p1) : '—') + '</b></td></tr>';
@@ -80,6 +81,7 @@ export function makeCatalog(X) {
       L.map((l, i) => '<td class="n">' + (z.prices && z.prices[l.n] != null ? (i === 0 ? '<b>' + money$(z.prices[l.n]) + '</b>' : money$(z.prices[l.n])) : '<span class="miss">—</span>') + '</td>').join('') +
       (it.cost_hidden ? '' : '<td class="n' + (mg != null && mg < 0 ? ' bad' : '') + '">' + (mg == null ? '—' : mg.toFixed(1) + '%') + '</td>') + '</tr>';
   }
+  const thumb = (it) => (it.photo_url ? '<img class="tph" src="' + esc(it.photo_url) + '" alt="" loading="lazy">' : '<span class="tph0" aria-hidden="true">+</span>');
   function itemRowsHtml(narrow) {
     const list = itemsShown(), L = levels();
     const cols = narrow ? 2 + (A.items[0] && A.items[0].cost_hidden ? 0 : 1) : 3 + L.length + (A.items[0] && A.items[0].cost_hidden ? 0 : 2);
@@ -92,12 +94,14 @@ export function makeCatalog(X) {
     const S = A.it, L = levels(), narrow = !!S.sel, all = A.items, mgr = X.isMgr();
     const need = all.filter((it) => it.active !== false && itemIssues(it, L).length).length;
     const off = all.filter((it) => it.active === false).length;
+    const noPh = all.filter((it) => it.active !== false && !it.photo_url).length;
     const hidden = all[0] && all[0].cost_hidden;
     const head = '<div class="hdr"><h1>Items<span class="count">' + all.filter((x) => x.active !== false).length.toLocaleString() + '</span></h1>' +
-      (mgr ? '<button class="btn" id="it-import" data-guide="items-list-import">Bring in from your old system</button><button class="btn amber" id="it-add" data-guide="items-list-add">+ Add item</button>' : '') + '</div>';
+      (mgr ? '<button class="btn" id="it-photos" data-guide="items-list-photos">Add photos</button><button class="btn" id="it-import" data-guide="items-list-import">Bring in from your old system</button><button class="btn amber" id="it-add" data-guide="items-list-add">+ Add item</button>' : '') + '</div>';
     const bar = '<div class="bar"><input class="inp q" id="it-q" type="search" placeholder="Scan a barcode, or search name, UPC or item #" value="' + esc(S.q) + '" data-guide="items-list-search">' +
       '<div class="seg2"><button class="' + (S.f === 'all' ? 'on' : '') + '" data-itf="all" data-guide="items-list-filter">All</button>' +
       '<button class="or' + (S.f === 'need' ? ' on' : '') + '" data-itf="need" data-guide="items-list-filter">Needs you<b>' + need + '</b></button>' +
+      (noPh && all.length ? '<button class="' + (S.f === 'nophoto' ? 'on' : '') + '" data-itf="nophoto" data-guide="items-list-filter">No photo<b>' + noPh + '</b></button>' : '') +
       (off ? '<button class="' + (S.f === 'off' ? 'on' : '') + '" data-itf="off" data-guide="items-list-filter">Stopped<b>' + off + '</b></button>' : '') + '</div>' +
       '<select class="sel" id="it-cat" data-guide="items-list-category">' + opt('', 'All categories', !S.cat) + CATEGORIES.map((c) => opt(c[0], c[1], c[0] === S.cat)).join('') + '</select></div>';
     const th = narrow
@@ -105,7 +109,7 @@ export function makeCatalog(X) {
       : '<tr><th>Item</th><th>Category</th><th>UPC</th>' + (hidden ? '' : '<th class="n">Cost</th>') + L.map((l) => '<th class="n">' + esc(l.name) + '</th>').join('') + (hidden ? '' : '<th class="n">Margin</th>') + '</tr>';
     const table = '<div class="tcard"><table class="t"><thead>' + th + '</thead><tbody id="it-rows">' + itemRowsHtml(narrow) + '</tbody></table>' +
       '<div class="tfoot"><span id="it-count">' + countLine(itemsShown().length, all.length, 'item') + '</span>' + (hidden || narrow ? '' : '<span>Margin = ' + esc(L[0] ? L[0].name : '') + '</span>') + '</div></div>';
-    return head + bar + (narrow ? '<div class="wrap2">' + table + itemPanelHtml() + '</div>' : table);
+    return head + bar + (narrow ? '<div class="wrap2">' + table + itemPanelHtml() + '</div>' : table) + (A.ph ? photosHtml() : '');
   }
   function countLine(shown, all, w) { return shown === all ? all.toLocaleString() + ' ' + w + (all === 1 ? '' : 's') : 'Showing ' + shown.toLocaleString() + ' of ' + all.toLocaleString(); }
 
@@ -137,7 +141,7 @@ export function makeCatalog(X) {
       const h = (A.hist || []).filter((x) => x.detail && x.detail.item === S.sel);
       body = A.hist ? '<table class="sz"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' + (h.length ? h.map((x) => '<tr><td>' + esc(X.when(x.at)) + '</td><td>' + esc(x.by) + '</td><td>' + esc(x.what.charAt(0).toUpperCase() + x.what.slice(1)) + '</td></tr>').join('') : '<tr><td colspan="3" class="mut">Nothing yet</td></tr>') + '</tbody></table>' : '<p class="sm">Loading…</p>';
     } else {
-      body = '<div class="sec">Details</div><div class="g2">' + inp('Name on the invoice', 'name', ' autocomplete="off"', true) + '</div>' +
+      body = '<div class="sec">Details</div>' + photoBox(it, ro) + '<div class="g2">' + inp('Name on the invoice', 'name', ' autocomplete="off"', true) + '</div>' +
         '<div class="g3">' + inp('Item #', 'item_no') +
         '<label class="f"><span>Category</span><select data-itk="category"' + dis + ' data-guide="items-item-category">' + CATEGORIES.map((c) => opt(c[0], c[1], c[0] === d.category)).join('') + '</select></label>' +
         '<label class="f"><span>Age limit</span><select data-itk="age"' + dis + ' data-guide="items-item-age">' + opt('0', 'None', +d.age === 0) + opt('18', '18+', +d.age === 18) + opt('21', '21+', +d.age === 21) + '</select></label></div>' +
@@ -154,10 +158,108 @@ export function makeCatalog(X) {
       (isNew ? '' : '<button class="x" id="it-prev" aria-label="Item before" data-guide="items-item-previous">‹</button><button class="x" id="it-next" aria-label="Next item" data-guide="items-item-next">›</button>') +
       '<button class="x" id="it-close" aria-label="Close" data-guide="items-item-close">✕</button></div>' + kpi + tabs + '<div class="pb">' + body + '</div>' + foot + '</div>';
   }
+  // ---------- item photo (one per item; every size shares it) ----------
+  function photoBox(it, ro) {
+    const S = A.it, url = it ? it.photo_url : (S.newPhoto || {}).url;
+    const note = '<small>Shows on invoices and in the store ordering app.</small>';
+    if (ro) return url ? '<div class="pbox"><img class="pbig" src="' + esc(url) + '" alt="Item photo"></div>' : '';
+    const fileBtn = (how, label, guide, cam) => '<label class="btn lcadd"><input type="file" accept="image/*"' + (cam ? ' capture="environment"' : '') + ' data-itph="' + how + '" data-guide="' + guide + '">' + label + '</label>';
+    if (S.phBusy) return '<div class="pbox"><div class="pbig0"><span>Saving…</span></div></div>';
+    if (url) return '<div class="pbox"><img class="pbig" src="' + esc(url) + '" alt="Item photo"><div class="pbtns">' +
+      fileBtn('new', 'Take or pick a new photo', 'items-item-photo-change') +
+      (S.phRm ? '<button class="btn red" id="it-phrm2" data-guide="items-item-photo-remove-confirm">Remove this photo?</button>' : '<button class="btn" id="it-phrm" data-guide="items-item-photo-remove">Remove photo</button>') + note + '</div></div>';
+    return '<div class="pbox"><div class="pbig0"><span class="plus">+</span>Add photo</div><div class="pbtns">' +
+      fileBtn('take', 'Take a photo', 'items-item-photo-take', true) + fileBtn('pick', 'Pick a photo', 'items-item-photo-pick') + note + '</div></div>';
+  }
+  function gotItem(it) {
+    const i = A.items.findIndex((x) => x.id === it.id);
+    if (i >= 0) A.items[i] = it; else A.items.push(it);
+    A.items.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  }
+  function bindPhoto() {
+    const S = A.it;
+    $$('[data-itph]').forEach((el) => { el.onchange = async () => {
+      const f = el.files && el.files[0]; if (!f) return;
+      let ph; try { ph = await readCopy(f, 800, true); } catch (e) { X.say(e.message, true); return; }
+      if (S.sel === 'new') { S.newPhoto = ph; X.render(); return; }
+      S.phBusy = true; X.render();
+      try { gotItem(await db.itemPhoto(A.cid, S.sel, ph)); A.hist = null; X.say('✓ Photo saved'); } catch (e) { X.say(e.message, true); }
+      S.phBusy = false; X.render();
+    }; });
+    if (q('#it-phrm')) q('#it-phrm').onclick = () => { S.phRm = true; X.render(); };
+    if (q('#it-phrm2')) q('#it-phrm2').onclick = async () => {
+      try { gotItem(await db.itemPhoto(A.cid, S.sel, null)); A.hist = null; X.say('Photo removed'); } catch (e) { X.say(e.message, true); }
+      S.phRm = false; X.render();
+    };
+  }
+
+  // ---------- Add photos for many items: names with a UPC or item # match by themselves ----------
+  function photosHtml() {
+    const P = A.ph, items = (A.items || []).filter((it) => it.active !== false);
+    const itemOpts = (sel) => opt('', 'Pick the item…', !sel) + items.map((it) => opt(it.id, it.name, it.id === sel)).join('');
+    const rows = P.rows.map((r, i) => {
+      const it = r.id && A.items.find((x) => x.id === r.id);
+      const st = r.saved ? '<span class="ok2">✓ Saved</span>' : it ? '<span class="ok2">✓ ' + (r.how === 'upc' ? 'Matched by UPC' : r.how === 'item' ? 'Matched by item #' : 'Picked') + (it.photo_url ? ' · replaces the old photo' : '') + '</span>' : '<span class="miss">Pick the item</span>';
+      return '<tr><td><img class="tph" src="' + esc(r.url) + '" alt=""></td><td class="mut">' + esc(r.name) + '</td><td>' +
+        (r.how && r.how !== 'pick' ? '<b>' + esc(it.name) + '</b>' : '<select class="sel" data-phsel="' + i + '" data-guide="items-photos-item"' + (P.busy ? ' disabled' : '') + '>' + itemOpts(r.id) + '</select>') + '</td><td>' + st +
+        (P.busy ? '' : ' <button class="xb" data-phrm="' + i + '" aria-label="Leave this photo out" data-guide="items-photos-remove">×</button>') + '</td></tr>';
+    }).join('');
+    const ready = P.rows.filter((r) => r.id && !r.saved).length, need = P.rows.filter((r) => !r.id).length;
+    return '<div class="phov" id="ph-ov"><div class="card phbox"><h2>Add photos for many items</h2>' +
+      '<p class="sm">Pick or drop photos. A photo named with the item’s UPC or item # matches by itself.</p>' +
+      '<label class="phdrop" id="ph-drop"><input type="file" accept="image/*" multiple id="ph-pick" data-guide="items-photos-pick"' + (P.busy ? ' disabled' : '') + '>' +
+      (P.reading ? 'Reading ' + P.reading + '…' : 'Drop photos here or <b>pick photos</b>') + '</label>' +
+      (P.rows.length ? '<div class="phlist"><table class="t"><thead><tr><th></th><th>File</th><th>Item</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '') +
+      '<div class="rowr"><span class="sm phsum" id="ph-sum">' + (P.busy ? 'Saving ' + P.done + ' of ' + P.total + '…' : P.rows.length ? ready + ' ready' + (need ? ' · ' + need + ' need you' : '') : '') + '</span>' +
+      '<button class="btn" id="ph-cancel" data-guide="items-photos-cancel"' + (P.busy ? ' disabled' : '') + '>' + (P.rows.length && !ready && P.rows.every((r) => r.saved || !r.id) && P.rows.some((r) => r.saved) ? 'Close' : 'Cancel') + '</button>' +
+      '<button class="btn amber" id="ph-save" data-guide="items-photos-save"' + (ready && !P.busy ? '' : ' disabled') + '>Save ' + ready + ' photo' + (ready === 1 ? '' : 's') + '</button></div></div></div>';
+  }
+  async function addPhotoFiles(files) {
+    const P = A.ph, items = (A.items || []).filter((it) => it.active !== false);
+    files = Array.from(files || []).filter((f) => /^image\//.test(f.type || ''));
+    for (let i = 0; i < files.length; i++) {
+      P.reading = (i + 1) + ' of ' + files.length; X.render();
+      try {
+        const ph = await readCopy(files[i], 800, true), m = photoMatch(files[i].name, items);
+        P.rows.push({ name: files[i].name, url: ph.url, type: ph.type, id: m ? m.id : '', how: m ? m.how : '' });
+      } catch (e) { X.say(files[i].name + ': ' + e.message, true); }
+    }
+    P.reading = ''; X.render();
+  }
+  function bindPhotos() {
+    const P = A.ph;
+    const pick = q('#ph-pick'); if (pick) pick.onchange = () => addPhotoFiles(pick.files);
+    const drop = q('#ph-drop');
+    if (drop) {
+      drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('on'); };
+      drop.ondragleave = () => drop.classList.remove('on');
+      drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('on'); addPhotoFiles(e.dataTransfer && e.dataTransfer.files); };
+    }
+    $$('[data-phsel]').forEach((el) => { el.onchange = () => { const r = P.rows[+el.dataset.phsel]; r.id = el.value; r.how = 'pick'; X.render(); }; });
+    $$('[data-phrm]').forEach((b) => { b.onclick = () => { P.rows.splice(+b.dataset.phrm, 1); X.render(); }; });
+    q('#ph-cancel').onclick = () => { A.ph = null; X.render(); };
+    q('#ph-save').onclick = async () => {
+      const todo = P.rows.filter((r) => r.id && !r.saved);
+      // Two photos for one item: the last one wins.
+      const last = {}; todo.forEach((r) => { last[r.id] = r; });
+      const go = Object.values(last);
+      todo.filter((r) => last[r.id] !== r).forEach((r) => { r.saved = true; });
+      P.busy = true; P.done = 0; P.total = go.length; X.render();
+      for (const r of go) {
+        try { gotItem(await db.itemPhoto(A.cid, r.id, { name: r.name, type: r.type, url: r.url })); r.saved = true; } catch (e) { X.say(r.name + ': ' + e.message, true); }
+        P.done++; const sum = q('#ph-sum'); if (sum) sum.textContent = 'Saving ' + P.done + ' of ' + P.total + '…';
+      }
+      const n = go.filter((r) => r.saved).length;
+      P.busy = false; A.hist = null;
+      if (P.rows.every((r) => r.saved)) A.ph = null;
+      X.say('✓ ' + n + ' photo' + (n === 1 ? '' : 's') + ' saved'); X.render();
+    };
+  }
+
   function openItem(id) {
     const S = A.it;
     if (S.sel && S.ed && S.sel !== id && (S.sel === 'new' || JSON.stringify(S.ed) !== S.orig) && !window.confirm('This item isn’t saved. Leave it without saving?')) return;
-    S.sel = id; S.err = ''; S.tab = 'item';
+    S.sel = id; S.err = ''; S.tab = 'item'; S.newPhoto = null; S.phRm = false; S.phBusy = false;
     S.ed = itemDraft(id === 'new' ? null : A.items.find((x) => x.id === id));
     S.orig = JSON.stringify(S.ed);
     X.render();
@@ -174,6 +276,8 @@ export function makeCatalog(X) {
     q('#it-cat').onchange = (e) => { S.cat = e.target.value; X.render(); };
     if (q('#it-add')) q('#it-add').onclick = () => openItem('new');
     if (q('#it-import')) q('#it-import').onclick = () => X.startImport('items');
+    if (q('#it-photos')) q('#it-photos').onclick = () => { A.ph = { rows: [], busy: false, done: 0, total: 0, reading: '' }; X.render(); };
+    if (A.ph) bindPhotos();
     function bindRows() {
       $$('[data-itrow]').forEach((tr) => { tr.onclick = () => openItem(tr.dataset.itrow); });
       if (q('#it-more')) q('#it-more').onclick = (e) => { e.stopPropagation(); S.more += PAGE; X.render(); };
@@ -221,6 +325,7 @@ export function makeCatalog(X) {
     };
     if (q('#it-undo')) q('#it-undo').onclick = () => { if (S.sel === 'new') { S.sel = null; S.ed = null; } else { S.ed = JSON.parse(S.orig); } S.err = ''; X.render(); };
     if (q('#it-save')) q('#it-save').onclick = saveItem;
+    bindPhoto();
     if (S.sel === 'new' && q('[data-itk="name"]') && !d.name) q('[data-itk="name"]').focus();
   }
   async function saveItem() {
@@ -234,10 +339,9 @@ export function makeCatalog(X) {
     const bad = itemCheck(p) || (p.ml != null && isNaN(p.ml) ? 'The ml isn’t a number.' : '') || (p.oz != null && isNaN(p.oz) ? 'The ounces aren’t a number.' : '');
     if (bad) { S.err = bad; const e = q('#it-err'); if (e) { e.textContent = bad; e.classList.add('bad'); } return; }
     try {
-      const it = await db.itemPut(A.cid, p);
-      const i = A.items.findIndex((x) => x.id === it.id);
-      if (i >= 0) A.items[i] = it; else A.items.push(it);
-      A.items.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      let it = await db.itemPut(A.cid, p);
+      if (S.newPhoto) { try { it = await db.itemPhoto(A.cid, it.id, S.newPhoto); } catch (e) { X.say('Item saved, but the photo didn’t go up: ' + e.message, true); } S.newPhoto = null; }
+      gotItem(it);
       S.sel = it.id; S.ed = itemDraft(it); S.orig = JSON.stringify(S.ed); S.err = ''; A.hist = null;
       X.say('✓ ' + it.name + ' saved');
     } catch (e) { S.err = e.message; }
@@ -488,19 +592,23 @@ export function makeCatalog(X) {
       '</aside>';
   }
   // A photo is shrunk to at most 1600 pixels on the phone before it goes up (a license is readable at that size).
-  function readCopy(file) {
+  function readCopy(file, max, photoOnly) {
+    max = max || 1600;
     return new Promise((res, rej) => {
+      if (photoOnly && !/^image\//.test(file.type || '')) return rej(new Error('Pick a photo'));
       if (!/^image\/|^application\/pdf$/.test(file.type || '')) return rej(new Error('Pick a photo or a PDF'));
-      if (file.size > 10 * 1024 * 1024) return rej(new Error('That file is bigger than 10 MB'));
+      if (file.size > (photoOnly ? 25 : 10) * 1024 * 1024) return rej(new Error('That file is bigger than ' + (photoOnly ? 25 : 10) + ' MB'));
       const fr = new FileReader();
       fr.onerror = () => rej(new Error('StoreOwl couldn’t read that file'));
       fr.onload = () => {
         const url = fr.result;
-        if (isPdf(file) || typeof document.createElement('canvas').getContext !== 'function') return res({ name: file.name, type: file.type, size: file.size, url });
+        let can = false;
+        try { const c0 = document.createElement('canvas'); can = typeof c0.getContext === 'function' && !!c0.getContext('2d'); } catch (e) { can = false; }
+        if (isPdf(file) || !can) return res({ name: file.name, type: file.type, size: file.size, url });
         const im = new Image();
         im.onload = () => {
           try {
-            const r = Math.min(1, 1600 / Math.max(im.width, im.height)), cv = document.createElement('canvas');
+            const r = Math.min(1, max / Math.max(im.width, im.height)), cv = document.createElement('canvas');
             cv.width = Math.round(im.width * r); cv.height = Math.round(im.height * r);
             const g = cv.getContext('2d'); if (!g) throw new Error('no canvas');
             g.drawImage(im, 0, 0, cv.width, cv.height);

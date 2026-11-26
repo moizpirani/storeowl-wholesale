@@ -954,3 +954,49 @@ end $$;
 -- A renewed license: the current copy keeps the number and end date it was added with; the app shows the license's own.
 revoke execute on function copy_add(uuid,uuid,text,jsonb), copy_remove(uuid,uuid,uuid) from public, anon;
 grant execute on function copy_add(uuid,uuid,text,jsonb), copy_remove(uuid,uuid,uuid), customer_get(uuid,uuid) to authenticated;
+
+-- =====================================================================
+-- Item photos (2026-11-26). One photo per item (every size shares it), in the PUBLIC storage bucket `item-photos`
+-- under <company>/<item>-<time>.jpg: product photos aren't private, and invoices and the store ordering app show them.
+-- Photos are made small (≤ 800 px JPEG) on the device before they go up. Owners and managers add or remove them.
+-- =====================================================================
+alter table items add column if not exists photo text not null default '';
+
+create or replace function _item_json(p_id uuid, p_cost boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', i.id, 'name', i.name, 'item_no', i.item_no, 'category', i.category, 'nacs', i.nacs,
+    'vendor', i.vendor, 'unit', i.unit, 'ml', i.ml, 'oz', i.oz, 'age', i.age, 'active', i.active, 'updated_at', i.updated_at,
+    'cost_hidden', not p_cost, 'photo', i.photo,
+    'sizes', coalesce((select jsonb_agg(jsonb_build_object('id', z.id, 'name', z.name, 'n', z.n, 'upc', z.upc,
+      'cost', case when p_cost then z.cost end, 'prices', z.prices) order by z.pos, z.n) from item_sizes z where z.item_id = i.id), '[]'::jsonb))
+  from items i where i.id = p_id $$;
+
+-- Owners and managers set (path) or take off ('') an item's photo. The file must be under <company>/<item>-.
+create or replace function item_photo_set(p_company uuid, p_item uuid, p_path text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare n text; old text;
+begin
+  perform _need(p_company, 'manager');
+  select name, photo into n, old from items where id = p_item and company_id = p_company;
+  if n is null then raise exception 'item not found'; end if;
+  p_path := coalesce(p_path, '');
+  if p_path <> '' and (p_path not like p_company::text || '/' || p_item::text || '-%' or p_path !~* '\.(jpg|jpeg|png|webp)$') then
+    raise exception 'that photo can''t be used'; end if;
+  update items set photo = p_path, updated_at = now() where id = p_item;
+  perform _log(p_company, case when p_path = '' then 'item photo removed' else 'item photo added' end,
+    jsonb_build_object('item', p_item, 'name', n, 'before', old, 'after', p_path));
+  return _item_json(p_item, true);
+end $$;
+revoke execute on function item_photo_set(uuid,uuid,text) from public, anon;
+grant execute on function item_photo_set(uuid,uuid,text) to authenticated;
+
+do $$ begin
+  if exists (select 1 from pg_namespace where nspname = 'storage') then
+    insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
+      values ('item-photos', 'item-photos', true, 5242880, array['image/jpeg','image/png','image/webp'])
+      on conflict (id) do update set public = true, file_size_limit = 5242880, allowed_mime_types = array['image/jpeg','image/png','image/webp'];
+    execute 'drop policy if exists "item photos add" on storage.objects';
+    execute $p$create policy "item photos add" on storage.objects for insert to authenticated
+      with check (bucket_id = 'item-photos' and public.copy_path_ok(name, 'manager'))$p$;
+  end if;
+end $$;

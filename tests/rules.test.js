@@ -29,3 +29,14 @@ test('the license list is checked before saving', () => {
   assert.match(licNeedCheck({ KY: ['resale'] }, ['TN']), /don’t sell in KY/);
   assert.match(licNeedCheck({ TN: ['x'] }, ['TN']), /from the list/);
 });
+
+import { photoMatch, upcSame } from '../src/rules.js';
+test('a photo file finds its item by UPC (any way it is written) or item #', () => {
+  const items = [{ id: 'a', item_no: 'SEN-FF-CTN', sizes: [{ upc: '014700319017' }, { upc: '10014700319014' }] }, { id: 'b', item_no: '', sizes: [{ upc: '028200003843' }] }];
+  assert.deepEqual(photoMatch('014700319017.jpg', items), { id: 'a', how: 'upc' });
+  assert.deepEqual(photoMatch('1470031901.JPG', items), { id: 'a', how: 'upc' }, '10 digits, no leading 0 or check digit');
+  assert.deepEqual(photoMatch('10014700319014.png', items), { id: 'a', how: 'upc' }, 'the case UPC');
+  assert.deepEqual(photoMatch('sen-ff-ctn.png', items), { id: 'a', how: 'item' });
+  assert.equal(photoMatch('IMG_2291.jpg', items), null);
+  assert.ok(upcSame('28200003843', '028200003843')); assert.ok(!upcSame('028200003843', '014700319017'));
+});

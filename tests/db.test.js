@@ -117,7 +117,13 @@ test('Phase 1: price levels, items with sizes, customers, licenses, notes', asyn
   await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Other', sizes: [{ name: 'Box', n: 1, upc: '014700319017' }] })], /already on Seneca/);
   await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'X', sizes: [{ name: 'Box', n: 0 }] })], /whole number/);
   await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'X', sizes: [] })], /at least one size/);
-  // Two sizes swap UPCs in one save.
+  // A photo: only a file under this company and item; taking it off leaves ''.
+  const iph = await one(db, 'select item_photo_set($1, $2, $3)', [cid, it.id, cid + '/' + it.id + '-1.jpg']);
+  assert.equal(iph.photo, cid + '/' + it.id + '-1.jpg');
+  await fails(db, 'select item_photo_set($1, $2, $3)', [cid, it.id, 'someone-else/' + it.id + '-1.jpg'], /can't be used/);
+  await fails(db, 'select item_photo_set($1, $2, $3)', [cid, it.id, cid + '/' + it.id + '-1.pdf'], /can't be used/);
+  assert.equal((await one(db, 'select item_photo_set($1, $2, $3)', [cid, it.id, ''])).photo, '');
+    // Two sizes swap UPCs in one save.
   const sw = await one(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify(Object.assign({}, it, {
     sizes: [Object.assign({}, it.sizes[0], { upc: it.sizes[1].upc }), Object.assign({}, it.sizes[1], { upc: it.sizes[0].upc })] }))]);
   assert.equal(sw.sizes[0].upc, '10014700319014'); assert.equal(sw.sizes[0].id, it.sizes[0].id);
