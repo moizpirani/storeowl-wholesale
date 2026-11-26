@@ -1,0 +1,141 @@
+/* StoreOwl Wholesale — same look as StoreOwl Back Office (Option D colors + design A side menu).
+   Navy #0F1B2D side menu / table headers, page #F6F7F9, white cards, lines #E3E6EB,
+   amber #F2A900 = the ONE main button per screen (last on the right), every other button white with a grey outline,
+   teal = links / ✓, orange = needs you, red = failed. Public Sans with tabular digits. */
+:root{
+  --navy:#0F1B2D; --amber:#F2A900; --bg:#F6F7F9; --card:#FFFFFF; --line:#E3E6EB; --line2:#CBD2DB;
+  --ink:#0F1B2D; --muted:#5B6472; --teal:#0F766E; --orange:#B45309; --red:#B91C1C;
+  --sans:'Public Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;font-variant-numeric:tabular-nums;-webkit-tap-highlight-color:transparent}
+h1{font-size:22px;font-weight:800;margin:4px 0 16px;line-height:1.2}
+h2{font-size:15px;font-weight:700;margin:0 0 12px}
+.sub{color:var(--muted);margin:-8px 0 16px}
+.sm{color:var(--muted);font-size:13px;display:block}
+.line{color:var(--muted);font-size:14px;margin:12px 0 0}
+.center{min-height:100vh;display:flex;align-items:center;justify-content:center}
+.owlbig{width:72px;height:72px}
+
+/* Buttons */
+.btn{font:inherit;font-weight:600;font-size:14px;min-height:38px;padding:0 16px;border-radius:8px;border:1px solid var(--line2);background:#fff;color:var(--ink);cursor:pointer}
+.btn:hover{border-color:#9AA4B2}
+.btn.amber{background:var(--amber);border-color:var(--amber);color:var(--navy)}
+.btn.amber:hover{background:#E09D00}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.sm{min-height:30px;padding:0 10px;font-size:13px}
+.rowr{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:18px;flex-wrap:wrap}
+.btn:focus-visible,input:focus,select:focus,.railbtn:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+
+/* Cards, boxes, forms */
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:0 0 14px}
+.fld{display:flex;flex-direction:column;gap:5px;margin:0 0 12px;min-width:0}
+.fld>span{font-size:12px;font-weight:600;color:var(--muted)}
+.fld input,.fld select{font:inherit;height:40px;border:1px solid var(--line2);border-radius:8px;padding:0 11px;background:#fff;color:var(--ink);width:100%}
+.fld input:disabled,.fld select:disabled{background:var(--bg);color:var(--muted)}
+.fld.narrow{max-width:340px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.grid2.tight{gap:0 10px}
+.grid3{display:grid;grid-template-columns:2fr 1.2fr 1fr;gap:0 14px}
+.span2{grid-column:span 2}
+.form{max-width:760px}
+.msgline{font-size:14px;margin:4px 0 0}
+.msgline.bad{color:var(--red)}
+.tag{display:inline-block;font-size:11px;font-weight:600;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.tag.ok{color:var(--teal);background:#E6F4F1}.tag.need{color:var(--orange);background:#FEF3E2}.tag.grey{color:var(--muted);background:#EEF1F4}
+.bxs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0 0 14px}
+.bx{display:flex;flex-direction:column;gap:3px;padding:13px 16px;margin:0}
+.bxl{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.bxv{font-size:22px;font-weight:700}
+.bxsub{display:block;font-size:12px;color:var(--muted);margin:0}
+.soon{display:flex;flex-direction:column;gap:4px;max-width:520px}
+.soon span{color:var(--muted);font-size:14px}
+
+/* Tables: navy header, light rows */
+table.t{width:100%;border-collapse:collapse;font-size:14px}
+.t th{text-align:left;font-size:12px;font-weight:600;color:#fff;background:var(--navy);padding:8px 10px}
+.t th:first-child{border-top-left-radius:6px}.t th:last-child{border-top-right-radius:6px}
+.t td{padding:9px 10px;border-bottom:1px solid #EEF1F4;vertical-align:middle}
+.t tr:last-child td{border-bottom:0}
+.t td b{display:block;font-weight:600}
+.t .r{text-align:right}.t .ck{width:90px}
+.t select{font:inherit;height:32px;border:1px solid var(--line2);border-radius:6px;padding:0 6px;background:#fff}
+
+/* Chips and segments */
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.chip{font:inherit;font-size:13px;font-weight:600;border:1px dashed var(--line2);background:#fff;color:var(--ink);border-radius:999px;padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.chip.on{border:1px solid var(--navy);background:var(--navy);color:#fff}
+.chip.on button{font:inherit;background:none;border:0;color:#fff;cursor:pointer;padding:0 0 0 2px;font-size:15px;line-height:1}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:10px;padding:3px;gap:3px;margin:0 0 14px;background:#fff}
+.seg button{font:inherit;font-weight:600;font-size:14px;border:0;background:none;border-radius:7px;padding:8px 16px;cursor:pointer;color:var(--muted)}
+.seg button.on{background:var(--navy);color:#fff}
+
+/* Sign in and setup */
+.auth{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.authcard{width:100%;max-width:420px;padding:28px}
+.authcard.wide{max-width:640px}
+.authbrand{display:flex;align-items:center;gap:10px;margin:0 0 22px}
+.authbrand svg{width:40px;height:40px}
+.authbrand b{display:block;font-size:18px;font-weight:800;line-height:1}
+.authbrand span{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--amber)}
+.code6{display:flex;gap:8px;margin:0 0 6px}
+.code6 input{width:48px;height:56px;text-align:center;font:inherit;font-size:24px;font-weight:700;border:1px solid var(--line2);border-radius:10px}
+.steps{display:flex;gap:18px;margin:0 0 18px;font-size:13px;font-weight:600;color:var(--muted)}
+.steps span{display:flex;align-items:center;gap:6px}
+.steps b{width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+.steps .on{color:var(--ink)}.steps .on b{background:var(--amber);border-color:var(--amber);color:var(--navy)}
+.steps .done b{background:var(--teal);border-color:var(--teal);color:#fff}
+
+/* The office: side menu, top bar, page */
+.rail{position:fixed;left:0;top:0;bottom:0;width:76px;background:var(--navy);display:flex;flex-direction:column;align-items:center;gap:2px;padding:0 6px 8px;overflow-y:auto;z-index:20}
+.railbrand{margin:10px 0 12px;width:44px;height:44px;border-radius:12px;background:var(--amber);display:flex;align-items:center;justify-content:center}.railbrand svg{width:34px;height:34px;display:block}
+.railbtn{font:inherit;width:64px;border:0;background:none;color:#C7D0DC;border-radius:10px;padding:7px 0 6px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
+.railbtn span{font-size:10px;font-weight:600}
+.railbtn:hover{background:rgba(255,255,255,.07)}
+.railbtn.on{background:rgba(242,169,0,.16);color:var(--amber)}
+.railbtn.later{opacity:.55}
+.shell{padding-left:76px;min-height:100vh}
+.topbar{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);min-height:56px;display:flex;align-items:center;gap:14px;padding:0 24px}
+.tbl{display:flex;align-items:baseline;gap:12px;flex:1;min-width:0}
+.coname{font-weight:700}
+.copick{font:inherit;font-weight:700;height:36px;border:1px solid var(--line2);border-radius:8px;padding:0 8px;background:#fff}
+.tbstates{color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct{position:relative}
+.acct summary{list-style:none;cursor:pointer;border:1px solid var(--line2);border-radius:999px;padding:6px 12px;font-weight:600;font-size:13px}
+.acct summary::-webkit-details-marker{display:none}
+.acctmenu{position:absolute;right:0;top:40px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(15,27,45,.14);padding:12px;display:flex;flex-direction:column;gap:8px;min-width:170px}
+.acctmenu span{font-size:12px;color:var(--muted)}
+.page{padding:20px 24px 90px;max-width:1240px}
+.tabs{display:flex;gap:22px;border-bottom:1px solid var(--line);margin:0 0 14px}
+.tabs button{font:inherit;font-weight:600;font-size:14px;color:var(--muted);background:none;border:0;border-bottom:2px solid transparent;padding:10px 0;margin-bottom:-1px;cursor:pointer}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--amber)}
+.invrow{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-top:16px}
+.invrow .fld{margin:0;flex:1 1 220px;max-width:340px}
+.invrow .fld:nth-child(2){flex:0 0 150px}
+.invrow .btn{min-height:40px}
+
+/* The sticky "Not saved yet" bar */
+.savebar{position:sticky;bottom:12px;max-width:760px;display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--navy);color:#fff;border-radius:10px;padding:10px 12px 10px 18px;font-weight:600}
+.savebar .rowr{margin:0}
+.savebar.hide{display:none}
+
+.toast{position:fixed;right:20px;bottom:20px;z-index:50;background:var(--navy);color:#fff;border-radius:10px;padding:12px 14px 12px 16px;display:flex;gap:12px;align-items:center;font-weight:600;box-shadow:0 8px 24px rgba(15,27,45,.2)}
+.toast.bad{background:var(--red)}
+.toast button{font:inherit;background:none;border:0;color:#fff;font-size:18px;cursor:pointer;line-height:1}
+
+/* Phones: the side menu becomes a bar at the bottom */
+@media (max-width:699px){
+  .rail{top:auto;right:0;width:auto;height:64px;flex-direction:row;padding:0 4px;overflow-x:auto;overflow-y:hidden}
+  .railbrand{display:none}
+  .railbtn{flex:0 0 64px}
+  .shell{padding-left:0;padding-bottom:64px}
+  .topbar{padding:0 14px}
+  .tbstates{display:none}
+  .page{padding:16px 14px 90px}
+  .bxs{grid-template-columns:1fr 1fr}
+  .grid2,.grid3{grid-template-columns:1fr}
+  .span2{grid-column:auto}
+  .code6 input{width:42px}
+  .savebar{bottom:76px}
+}
