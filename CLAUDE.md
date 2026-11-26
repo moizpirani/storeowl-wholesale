@@ -45,4 +45,5 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   BOTH email templates **Confirm signup** (first sign-in of a new email) AND **Magic Link** must show `{{ .Token }}`
   (the screen asks for a 6-digit code; Confirm signup was missed first, so a new email got a link); Site URL = the
   app address with no `/**`; Redirect URLs = each address + `/**`; custom SMTP. Checking means signing in with an
-  email that has never signed in before.
+  email that has never signed in before. **Email OTP Length = 6** (Sign In / Providers → Email; Supabase's
+  default is now 8 and the screen has 6 boxes).
