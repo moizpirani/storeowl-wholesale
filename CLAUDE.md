@@ -61,7 +61,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
     Owes / past due / buys a week show $0 until invoices (Phase 2) and payments (Phase 3).
   - Not built yet in Phase 1: uploading license copies.
 - **Phase 1, part 2 = Bring in from your old system (built 2026-11-26, Moiz said "Yes"; database migration
-  `phase1_import_and_starting_balances_2026_11_26` on the test database; code committed on `main` locally, NOT pushed to test or live):**
+  `phase1_import_and_starting_balances_2026_11_26` on the test database; ON TEST since 2026-11-26, branch `test`; not on `main` live):**
   `src/importer.js` (pure: CSV / Excel reading, heading row found, column guessing incl. price levels by name, UPC from Excel's
   scientific notation refused, 11-digit UPC fixed only when the check digit then works, dates, terms, levels, carton / roll sizes;
   `buildItems` / `buildCustomers` → good / bad (left out with the reason) / skip (already in StoreOwl: same UPC, or same name + store #);
