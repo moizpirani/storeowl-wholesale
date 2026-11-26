@@ -35,5 +35,9 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   which phase brings them), Home, Settings → Company · States (owners) · People (invite by email; the invite turns
   into a membership at first sign-in; the last owner can't step down) · History. Schema applied to the test database
   as migration `phase0_companies_people_states_2026_11_26`.
-- Still to do for Phase 0: GitHub repo + Vercel project, Supabase Auth (code email template, Site URL
-  https://wholesale.storeowl.app), domain wholesale.storeowl.app / test-wholesale.storeowl.app.
+- **On test (2026-11-26, Moiz: "Put it on test"):** Vercel project `storeowl-wholesale` (prj_CVUZAdoMViGTBZ4v98jVRbzoAaLG,
+  team moiz-pirani), linked to this repo; env `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (publishable key) = the
+  test database on Production + Preview; Vercel sign-in off. Branch `test` → domain test-wholesale.storeowl.app (needs
+  Cloudflare DNS `CNAME test-wholesale → cname.vercel-dns.com`, DNS only, added by Moiz) and
+  storeowl-wholesale-git-test-moiz-pirani.vercel.app. Supabase Auth: Magic Link template shows `{{ .Token }}`, custom
+  SMTP set by Moiz. Not done: wholesale.storeowl.app for `main`, Supabase Site URL.
