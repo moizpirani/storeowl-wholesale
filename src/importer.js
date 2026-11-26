@@ -183,6 +183,7 @@ export function levelFrom(v, levels) {
 export function categoryFrom(v) {
   const s = String(v || '').toLowerCase();
   if (!s) return 'other';
+  if (/cigarette|^cigs?$|\bcigs\b/.test(s)) return 'cigarettes';
   if (/cigarillo|cigar|leaf|wrap|blunt/.test(s)) return 'cigars';
   if (/cig/.test(s)) return 'cigarettes';
   if (/vap|e-?cig|disposable|pod|e-?liquid|juice/.test(s)) return 'vapor';

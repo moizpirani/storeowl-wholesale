@@ -63,3 +63,10 @@ test('balances on rows left out are counted, so the check can say where a gap is
   assert.equal(b.balance, 10);
   assert.equal(b.outBal, 12);
 });
+
+test('"Cigarettes" is cigarettes, not cigars', () => {
+  assert.equal(categoryFrom('Cigarettes'), 'cigarettes');
+  assert.equal(categoryFrom('CIGS'), 'cigarettes');
+  assert.equal(categoryFrom('Cigars'), 'cigars');
+  assert.equal(categoryFrom('Cigarillos'), 'cigars');
+});
