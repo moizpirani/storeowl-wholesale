@@ -148,3 +148,44 @@ test('Phase 1: price levels, items with sizes, customers, licenses, notes', asyn
   await fails(db, 'select customers_list($1)', [cid], /no access/);
   await fails(db, 'select customer_get($1, $2)', [cid, cu.id], /no access/);
 });
+
+test('Phase 1: bring in items and customers, then take it back', async () => {
+  const db = await fresh();
+  await as(db, OWNER, 'owner@example.com');
+  const c = await one(db, "select create_company($1::jsonb)", [JSON.stringify({ name: 'Knox', home: 'TN' })]);
+  const cid = c.id;
+  await one(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Already here', sizes: [{ name: 'Box', n: 1, upc: '028200003843' }] })]);
+
+  const imp = await one(db, 'select import_start($1, $2::jsonb)', [cid, JSON.stringify({ kind: 'items', file: 'items.csv' })]);
+  const r = await one(db, 'select import_items($1, $2, $3::jsonb)', [cid, imp, JSON.stringify([
+    { name: 'Seneca FF', category: 'cigarettes', unit: 'pack', sizes: [{ name: 'Carton', n: 10, upc: '014700319017', cost: 28.9, prices: { 1: 34.2 } }] },
+    { name: 'Marlboro', sizes: [{ name: 'Carton', n: 10, upc: '028200003843' }] },
+    { name: 'Lighter', category: 'nonsense', sizes: [{ name: 'Each', n: 1, upc: '' }] }])]);
+  assert.deepEqual(r, { added: 2, skipped: 1 });
+  const done = await one(db, 'select import_finish($1, $2)', [cid, imp]);
+  assert.equal(done.added, 2);
+  assert.equal((await one(db, 'select items_list($1)', [cid])).length, 3);
+
+  const ic = await one(db, 'select import_start($1, $2::jsonb)', [cid, JSON.stringify({ kind: 'customers', file: 'c.xlsx', old_total: '1500.25' })]);
+  const rc = await one(db, 'select import_customers($1, $2, $3::jsonb)', [cid, ic, JSON.stringify([
+    { name: 'Clinton Hwy Market', store_no: '104', terms: 'net7', level: 2, opening: 1200.25, licenses: [{ kind: 'resale', number: '0106' }, { kind: 'tobacco', number: '46-1', expires: '2027-01-31' }] },
+    { name: 'Powell Quick Stop', level: 9, opening: 300 }, { name: ' clinton  hwy market ', store_no: '104' }])]);
+  assert.deepEqual(rc, { added: 2, skipped: 1, balance: 1500.25 });
+  const list = await one(db, 'select customers_list($1)', [cid]);
+  const cl = list.find((x) => x.name === 'Clinton Hwy Market');
+  assert.equal(Number(cl.owes), 1200.25); assert.equal(cl.level, 2); assert.equal(cl.licenses.length, 2);
+  assert.equal(list.find((x) => x.name === 'Powell Quick Stop').level, 1, 'unknown level → the default');
+  const hist = await one(db, 'select imports_list($1)', [cid]);
+  assert.equal(Number(hist[0].balance), 1500.25); assert.equal(Number(hist[0].old_total), 1500.25);
+
+  // Only an owner changes a starting balance.
+  await one(db, 'select invite_put($1, $2, $3)', [cid, 'mgr@example.com', 'manager']);
+  await as(db, MGR, 'mgr@example.com'); await one(db, 'select my_companies()');
+  await fails(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ id: cl.id, opening: 0 })], /only an owner/);
+  // Taking an import back removes what it added, once.
+  const u = await one(db, 'select import_undo($1, $2)', [cid, ic]);
+  assert.equal(u.removed, 2);
+  assert.equal((await one(db, 'select customers_list($1)', [cid])).length, 0);
+  await fails(db, 'select import_undo($1, $2)', [cid, ic], /already taken back/);
+  await fails(db, 'select import_customers($1, $2, $3::jsonb)', [cid, ic, '[]'], /import not found/);
+});

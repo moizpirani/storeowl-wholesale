@@ -607,6 +607,7 @@ begin
     active = case when p ? 'active' then (p->>'active')::boolean else active end,
     updated_at = now()
   where id = cid;
+  perform _opening_put(p_company, cid, p);
   perform _log(p_company, case when isnew then 'customer added' else 'customer changed' end,
     jsonb_build_object('customer', cid, 'name', (select name from customers where id = cid), 'before', before));
   return customer_get(p_company, cid);
@@ -660,3 +661,172 @@ revoke execute on function levels_set(uuid,jsonb), company_settings_set(uuid,jso
   customers_list(uuid), customer_get(uuid,uuid), customer_put(uuid,jsonb), license_put(uuid,uuid,jsonb), note_add(uuid,uuid,text) from public, anon;
 grant execute on function levels_set(uuid,jsonb), company_settings_set(uuid,jsonb), items_list(uuid), item_put(uuid,jsonb),
   customers_list(uuid), customer_get(uuid,uuid), customer_put(uuid,jsonb), license_put(uuid,uuid,jsonb), note_add(uuid,uuid,text) to authenticated;
+
+-- ===== Phase 1, part 2: bring in from your old system (2026-11-26) =====
+-- A customer's balance from the old system is kept as a starting balance (owes = starting balance + invoices − payments later).
+alter table customers add column if not exists opening numeric(12,2) not null default 0;
+alter table customers add column if not exists opening_as_of date;
+
+create table if not exists imports (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  kind text not null check (kind in ('items','customers')),
+  file text not null default '',
+  added int not null default 0,
+  skipped int not null default 0,
+  balance numeric(14,2),            -- customers: total starting balances brought in
+  old_total numeric(14,2),          -- what the wholesaler said the old system shows
+  by_name text not null default '',
+  at timestamptz not null default now(),
+  undone_at timestamptz
+);
+create index if not exists imports_company on imports(company_id, at desc);
+alter table items add column if not exists import_id uuid references imports(id) on delete set null;
+alter table customers add column if not exists import_id uuid references imports(id) on delete set null;
+alter table imports enable row level security;
+revoke all on imports from anon, authenticated;
+
+create or replace function _cust_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(c) - 'company_id' - 'import_id' || jsonb_build_object('owes', c.opening,
+    'licenses', coalesce((select jsonb_agg(jsonb_build_object('kind', l.kind, 'number', l.number, 'expires', l.expires, 'copy', l.copy) order by l.kind)
+      from customer_licenses l where l.customer_id = c.id), '[]'::jsonb))
+  from customers c where c.id = p_id $$;
+
+-- Owners and managers start an import. p = {kind, file, old_total}
+create or replace function import_start(p_company uuid, p jsonb) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare iid uuid;
+begin
+  perform _need(p_company, 'manager');
+  if coalesce(p->>'kind','') not in ('items','customers') then raise exception 'pick items or customers'; end if;
+  insert into imports(company_id, kind, file, old_total, by_name)
+    values (p_company, p->>'kind', left(coalesce(p->>'file',''), 200), _num(p->'old_total'),
+      coalesce((select nullif(name,'') from company_members where company_id = p_company and user_id = auth.uid()), _my_email()))
+    returning id into iid;
+  return iid;
+end $$;
+
+-- Items in batches. Each row = one item with its sizes. A UPC already in the company is left alone (counted as skipped).
+create or replace function import_items(p_company uuid, p_import uuid, p_rows jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r jsonb; z jsonb; iid uuid; u text; v_added int := 0; v_skipped int := 0; pos int;
+begin
+  perform _need(p_company, 'manager');
+  if not exists (select 1 from imports where id = p_import and company_id = p_company and kind = 'items' and undone_at is null) then raise exception 'import not found'; end if;
+  if jsonb_array_length(coalesce(p_rows,'[]'::jsonb)) > 1000 then raise exception 'send at most 1000 rows at a time'; end if;
+  for r in select * from jsonb_array_elements(p_rows) loop
+    if length(trim(coalesce(r->>'name',''))) = 0 or jsonb_array_length(coalesce(r->'sizes','[]'::jsonb)) = 0 then v_skipped := v_skipped + 1; continue; end if;
+    if exists (select 1 from jsonb_array_elements(r->'sizes') s join item_sizes x on x.company_id = p_company
+        and x.upc = regexp_replace(coalesce(s->>'upc',''), '\D', '', 'g') where regexp_replace(coalesce(s->>'upc',''), '\D', '', 'g') <> '') then
+      v_skipped := v_skipped + 1; continue; end if;
+    insert into items(company_id, name, item_no, category, nacs, vendor, unit, age, import_id)
+      values (p_company, left(trim(r->>'name'),160), left(trim(coalesce(r->>'item_no','')),60),
+        case when r->>'category' in ('cigarettes','cigars','otp','snuff','vapor','pouches','hemp','beer','other') then r->>'category' else 'other' end,
+        left(trim(coalesce(r->>'nacs','')),20), left(trim(coalesce(r->>'vendor','')),80), coalesce(nullif(trim(r->>'unit'),''),'each'),
+        case when (r->>'age') in ('0','18','21') then (r->>'age')::int else 0 end, p_import)
+      returning id into iid;
+    pos := 0;
+    for z in select * from jsonb_array_elements(r->'sizes') loop
+      pos := pos + 1;
+      u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+      if length(u) not between 6 and 14 then u := ''; end if;
+      insert into item_sizes(item_id, company_id, pos, name, n, upc, cost, prices)
+        values (iid, p_company, pos, left(coalesce(nullif(trim(z->>'name'),''),'Each'),40), greatest(coalesce((z->>'n')::int,1),1), u, _num(z->'cost'),
+          coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null and _num(v) >= 0), '{}'::jsonb));
+    end loop;
+    v_added := v_added + 1;
+  end loop;
+  update imports set added = added + v_added, skipped = skipped + v_skipped where id = p_import;
+  return jsonb_build_object('added', v_added, 'skipped', v_skipped);
+end $$;
+
+-- Customers in batches. Same name + store # already here = left alone. Balances become starting balances.
+create or replace function import_customers(p_company uuid, p_import uuid, p_rows jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r jsonb; l jsonb; cid uuid; v_added int := 0; v_skipped int := 0; bal numeric := 0; lv int; deflv int;
+begin
+  perform _need(p_company, 'manager');
+  perform _levels_ensure(p_company);
+  if not exists (select 1 from imports where id = p_import and company_id = p_company and kind = 'customers' and undone_at is null) then raise exception 'import not found'; end if;
+  if jsonb_array_length(coalesce(p_rows,'[]'::jsonb)) > 1000 then raise exception 'send at most 1000 rows at a time'; end if;
+  deflv := coalesce((select (settings->>'default_level')::int from companies where id = p_company), (select min(n) from price_levels where company_id = p_company));
+  for r in select * from jsonb_array_elements(p_rows) loop
+    if length(trim(coalesce(r->>'name',''))) = 0 or exists (select 1 from customers where company_id = p_company
+        and lower(regexp_replace(trim(name), '\s+', ' ', 'g')) = lower(regexp_replace(trim(r->>'name'), '\s+', ' ', 'g'))
+        and lower(store_no) = lower(trim(coalesce(r->>'store_no','')))) then
+      v_skipped := v_skipped + 1; continue; end if;
+    lv := (r->>'level')::int;
+    if lv is null or not exists (select 1 from price_levels where company_id = p_company and n = lv) then lv := deflv; end if;
+    insert into customers(company_id, name, store_no, phone, email, addr, city, state, zip, contacts, level, terms, credit_limit, opening, opening_as_of, import_id)
+      values (p_company, left(trim(r->>'name'),160), left(trim(coalesce(r->>'store_no','')),40), left(trim(coalesce(r->>'phone','')),40),
+        case when lower(trim(coalesce(r->>'email',''))) ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then lower(trim(r->>'email')) else '' end,
+        left(trim(coalesce(r->>'addr','')),160), left(trim(coalesce(r->>'city','')),80), coalesce(_clean_state(r->>'state'),''), left(trim(coalesce(r->>'zip','')),12),
+        coalesce((select jsonb_agg(jsonb_build_object('name', left(trim(coalesce(x->>'name','')),80), 'role', left(trim(coalesce(x->>'role','')),40), 'phone', left(trim(coalesce(x->>'phone','')),40)))
+          from jsonb_array_elements(coalesce(r->'contacts','[]'::jsonb)) x where trim(coalesce(x->>'name','')) <> ''), '[]'::jsonb),
+        lv, case when r->>'terms' in ('cod','advance','net7','net10','net14','net30') then r->>'terms' else 'cod' end,
+        case when _num(r->'credit_limit') >= 0 then _num(r->'credit_limit') end, coalesce(_num(r->'opening'),0), current_date, p_import)
+      returning id into cid;
+    for l in select * from jsonb_array_elements(coalesce(r->'licenses','[]'::jsonb)) loop
+      if l->>'kind' in ('resale','location','tobacco','vapor','hemp','beer') and length(trim(coalesce(l->>'number',''))) > 0 then
+        insert into customer_licenses(customer_id, company_id, kind, number, expires)
+          values (cid, p_company, l->>'kind', left(trim(l->>'number'),60), nullif(l->>'expires','')::date) on conflict do nothing;
+      end if;
+    end loop;
+    bal := bal + coalesce(_num(r->'opening'),0);
+    v_added := v_added + 1;
+  end loop;
+  update imports set added = added + v_added, skipped = skipped + v_skipped, balance = coalesce(balance,0) + bal where id = p_import;
+  return jsonb_build_object('added', v_added, 'skipped', v_skipped, 'balance', bal);
+end $$;
+
+create or replace function import_finish(p_company uuid, p_import uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x imports;
+begin
+  perform _need(p_company, 'manager');
+  select * into x from imports where id = p_import and company_id = p_company;
+  if x.id is null then raise exception 'import not found'; end if;
+  perform _log(p_company, 'brought in ' || x.kind, jsonb_build_object('import', x.id, 'file', x.file, 'added', x.added, 'skipped', x.skipped, 'balance', x.balance, 'old_total', x.old_total));
+  return to_jsonb(x) - 'company_id';
+end $$;
+
+create or replace function imports_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'manager');
+  return coalesce((select jsonb_agg(to_jsonb(x) - 'company_id' order by at desc) from (select * from imports where company_id = p_company order by at desc limit 50) x), '[]'::jsonb);
+end $$;
+
+-- Owners and managers take back an import: everything it added goes away.
+-- (Once invoices exist, a customer or item that has been used on one will stay: Phase 2 adds that check.)
+create or replace function import_undo(p_company uuid, p_import uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x imports; n int;
+begin
+  perform _need(p_company, 'manager');
+  select * into x from imports where id = p_import and company_id = p_company;
+  if x.id is null then raise exception 'import not found'; end if;
+  if x.undone_at is not null then raise exception 'this import was already taken back'; end if;
+  if x.kind = 'items' then delete from items where company_id = p_company and import_id = p_import; get diagnostics n = row_count;
+  else delete from customers where company_id = p_company and import_id = p_import; get diagnostics n = row_count; end if;
+  update imports set undone_at = now() where id = p_import;
+  perform _log(p_company, 'import taken back', jsonb_build_object('import', p_import, 'kind', x.kind, 'file', x.file, 'removed', n));
+  return jsonb_build_object('removed', n);
+end $$;
+
+-- Starting balance can be typed by owners (customer_put takes 'opening').
+create or replace function _opening_put(p_company uuid, p_cust uuid, p jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if p ? 'opening' then
+    if _role_in(p_company) <> 'owner' then raise exception 'only an owner can change a starting balance'; end if;
+    update customers set opening = coalesce(_num(p->'opening'),0), opening_as_of = coalesce(opening_as_of, current_date) where id = p_cust;
+  end if;
+end $$;
+
+revoke execute on function _opening_put(uuid,uuid,jsonb) from public, anon, authenticated;
+revoke execute on function import_start(uuid,jsonb), import_items(uuid,uuid,jsonb), import_customers(uuid,uuid,jsonb), import_finish(uuid,uuid),
+  imports_list(uuid), import_undo(uuid,uuid) from public, anon;
+grant execute on function import_start(uuid,jsonb), import_items(uuid,uuid,jsonb), import_customers(uuid,uuid,jsonb), import_finish(uuid,uuid),
+  imports_list(uuid), import_undo(uuid,uuid) to authenticated;

@@ -40,7 +40,13 @@ export function makeDb(sb) {
     customer: (id, cust) => rpc('customer_get', { p_company: id, p_id: cust }),
     customerPut: (id, p) => rpc('customer_put', { p_company: id, p }),
     licensePut: (id, cust, p) => rpc('license_put', { p_company: id, p_customer: cust, p }),
-    noteAdd: (id, cust, text) => rpc('note_add', { p_company: id, p_customer: cust, p_text: text })
+    noteAdd: (id, cust, text) => rpc('note_add', { p_company: id, p_customer: cust, p_text: text }),
+    importStart: (id, p) => rpc('import_start', { p_company: id, p }),
+    importItems: (id, imp, rows) => rpc('import_items', { p_company: id, p_import: imp, p_rows: rows }),
+    importCustomers: (id, imp, rows) => rpc('import_customers', { p_company: id, p_import: imp, p_rows: rows }),
+    importFinish: (id, imp) => rpc('import_finish', { p_company: id, p_import: imp }),
+    imports: (id) => rpc('imports_list', { p_company: id }),
+    importUndo: (id, imp) => rpc('import_undo', { p_company: id, p_import: imp })
   };
 }
 
@@ -57,7 +63,7 @@ export function plain(m) {
 export function makeFake(opts) {
   opts = opts || {};
   let me = opts.signedIn ? { email: opts.signedIn } : null;
-  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [] };
+  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [] };
   let n = 0;
   const id = () => 'c' + (++n);
   const uid = (email) => 'u-' + email;
@@ -79,12 +85,12 @@ export function makeFake(opts) {
   const copy = (o) => JSON.parse(JSON.stringify(o));
   const nz = (v) => (v === '' || v == null ? null : Number(v));
   function itemOut(it, cost) {
-    const o = copy(it); delete o.company_id; o.cost_hidden = !cost;
+    const o = copy(it); delete o.company_id; delete o.import_id; o.cost_hidden = !cost;
     if (!cost) o.sizes.forEach((z) => { z.cost = null; });
     return o;
   }
   function custOut(c, full) {
-    const o = copy(c); delete o.company_id; o.owes = 0;
+    const o = copy(c); delete o.company_id; delete o.import_id; o.owes = c.opening || 0;
     if (full) {
       o.notes = S.notes.filter((x) => x.customer_id === c.id).slice().reverse().map((x) => ({ id: x.id, text: x.text, by: x.by, at: x.at }));
       o.history = S.log.filter((x) => x.company_id === c.company_id && x.detail.customer === c.id).slice(0, 100);
@@ -239,7 +245,8 @@ export function makeFake(opts) {
       return custOut(c, true);
     },
     async customerPut(cid, p) {
-      need(cid, 'manager');
+      const me1 = need(cid, 'manager');
+      if ('opening' in p && me1.role !== 'owner') throw new Error('Only an owner can change a starting balance');
       const co = S.companies.find((x) => x.id === cid);
       const isnew = !p.id;
       if (isnew || 'name' in p) { const bad = custCheck(Object.assign({ name: '' }, p, { credit_limit: nz(p.credit_limit) })); if (bad) throw new Error(bad); }
@@ -250,7 +257,7 @@ export function makeFake(opts) {
       if (!c) {
         c = { id: id(), company_id: cid, name: '', store_no: '', phone: '', email: '', addr: '', city: '', state: '', zip: '', contacts: [],
           level: Object.assign({}, DEFAULT_SETTINGS, co.settings).default_level, terms: 'cod', credit_limit: null, tobacco: true, delivery: '', route: '', rep: '',
-          ship_to: '', since: null, active: true, licenses: [], created_at: new Date().toISOString() };
+          ship_to: '', since: null, active: true, licenses: [], opening: 0, opening_as_of: null, created_at: new Date().toISOString() };
         S.customers.push(c);
       }
       ['name', 'store_no', 'phone', 'addr', 'city', 'state', 'zip', 'delivery', 'route', 'rep', 'ship_to'].forEach((k) => { if (k in p) c[k] = String(p[k] || '').trim(); });
@@ -260,6 +267,7 @@ export function makeFake(opts) {
       ['terms', 'tobacco', 'active'].forEach((k) => { if (k in p) c[k] = p[k]; });
       if ('credit_limit' in p) c.credit_limit = nz(p.credit_limit);
       if ('since' in p) c.since = p.since || null;
+      if ('opening' in p) { c.opening = nz(p.opening) || 0; c.opening_as_of = c.opening_as_of || new Date().toISOString().slice(0, 10); }
       log(cid, isnew ? 'customer added' : 'customer changed', { customer: c.id, name: c.name, before });
       return custOut(c, true);
     },
@@ -273,6 +281,65 @@ export function makeFake(opts) {
       c.licenses.sort((a, b) => a.kind.localeCompare(b.kind));
       log(cid, 'license changed', { customer: c.id, kind: p.kind, before, after: c.licenses.find((l) => l.kind === p.kind) || null });
       return custOut(c, true);
+    },
+    async importStart(cid, p) {
+      const m = need(cid, 'manager');
+      const x = { id: id(), company_id: cid, kind: p.kind, file: p.file || '', added: 0, skipped: 0, balance: null, old_total: nz(p.old_total), by_name: m.name || me.email, at: new Date().toISOString(), undone_at: null };
+      S.imports.unshift(x); return x.id;
+    },
+    async importItems(cid, imp, rows) {
+      need(cid, 'manager');
+      const x = S.imports.find((i) => i.id === imp && i.company_id === cid && i.kind === 'items' && !i.undone_at);
+      if (!x) throw new Error('Import not found');
+      let added = 0, skipped = 0;
+      for (const r of rows) {
+        const ups = r.sizes.map((z) => cleanUpc(z.upc)).filter(Boolean);
+        if (!r.name || S.items.some((it) => it.company_id === cid && it.sizes.some((z) => ups.includes(z.upc)))) { skipped++; continue; }
+        S.items.push({ id: id(), company_id: cid, import_id: imp, name: r.name, item_no: r.item_no || '', category: r.category || 'other', nacs: r.nacs || '', vendor: r.vendor || '',
+          unit: r.unit || 'each', ml: null, oz: null, age: r.age || 0, active: true, updated_at: new Date().toISOString(),
+          sizes: r.sizes.map((z) => ({ id: id(), name: z.name, n: z.n, upc: cleanUpc(z.upc), cost: z.cost == null ? null : z.cost, prices: z.prices || {} })) });
+        added++;
+      }
+      x.added += added; x.skipped += skipped;
+      return { added, skipped };
+    },
+    async importCustomers(cid, imp, rows) {
+      need(cid, 'manager');
+      const x = S.imports.find((i) => i.id === imp && i.company_id === cid && i.kind === 'customers' && !i.undone_at);
+      if (!x) throw new Error('Import not found');
+      const co = S.companies.find((c) => c.id === cid);
+      const key = (n, s) => n.toLowerCase().replace(/\s+/g, ' ').trim() + '|' + String(s || '').toLowerCase().trim();
+      let added = 0, skipped = 0, balance = 0;
+      for (const r of rows) {
+        if (!r.name || S.customers.some((c) => c.company_id === cid && key(c.name, c.store_no) === key(r.name, r.store_no))) { skipped++; continue; }
+        const lv = co.levels.some((l) => l.n === r.level) ? r.level : Object.assign({}, DEFAULT_SETTINGS, co.settings).default_level;
+        S.customers.push({ id: id(), company_id: cid, import_id: imp, name: r.name.trim(), store_no: r.store_no || '', phone: r.phone || '', email: r.email || '', addr: r.addr || '',
+          city: r.city || '', state: r.state || '', zip: r.zip || '', contacts: r.contacts || [], level: lv, terms: r.terms || 'cod', credit_limit: r.credit_limit == null ? null : r.credit_limit,
+          tobacco: true, delivery: '', route: '', rep: '', ship_to: '', since: null, active: true, opening: r.opening || 0, opening_as_of: new Date().toISOString().slice(0, 10),
+          licenses: (r.licenses || []).map((l) => ({ kind: l.kind, number: l.number, expires: l.expires || null, copy: false })), created_at: new Date().toISOString() });
+        balance += r.opening || 0; added++;
+      }
+      x.added += added; x.skipped += skipped; x.balance = Math.round(((x.balance || 0) + balance) * 100) / 100;
+      return { added, skipped, balance };
+    },
+    async importFinish(cid, imp) {
+      need(cid, 'manager');
+      const x = S.imports.find((i) => i.id === imp && i.company_id === cid);
+      log(cid, 'brought in ' + x.kind, { import: x.id, file: x.file, added: x.added, skipped: x.skipped, balance: x.balance, old_total: x.old_total });
+      return copy(x);
+    },
+    async imports(cid) { need(cid, 'manager'); return S.imports.filter((i) => i.company_id === cid).map(copy); },
+    async importUndo(cid, imp) {
+      need(cid, 'manager');
+      const x = S.imports.find((i) => i.id === imp && i.company_id === cid);
+      if (!x) throw new Error('Import not found');
+      if (x.undone_at) throw new Error('This import was already taken back');
+      const list = x.kind === 'items' ? S.items : S.customers;
+      const before = list.length;
+      for (let i = list.length - 1; i >= 0; i--) if (list[i].import_id === imp) list.splice(i, 1);
+      x.undone_at = new Date().toISOString();
+      log(cid, 'import taken back', { import: imp, kind: x.kind, file: x.file, removed: before - list.length });
+      return { removed: before - list.length };
     },
     async noteAdd(cid, cust, text) {
       const m = need(cid, 'staff');

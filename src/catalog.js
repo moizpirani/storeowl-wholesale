@@ -92,7 +92,7 @@ export function makeCatalog(X) {
     const off = all.filter((it) => it.active === false).length;
     const hidden = all[0] && all[0].cost_hidden;
     const head = '<div class="hdr"><h1>Items<span class="count">' + all.filter((x) => x.active !== false).length.toLocaleString() + '</span></h1>' +
-      (mgr ? '<button class="btn amber" id="it-add" data-guide="items-list-add">+ Add item</button>' : '') + '</div>';
+      (mgr ? '<button class="btn" id="it-import" data-guide="items-list-import">Bring in from your old system</button><button class="btn amber" id="it-add" data-guide="items-list-add">+ Add item</button>' : '') + '</div>';
     const bar = '<div class="bar"><input class="inp q" id="it-q" type="search" placeholder="Scan a barcode, or search name, UPC or item #" value="' + esc(S.q) + '" data-guide="items-list-search">' +
       '<div class="seg2"><button class="' + (S.f === 'all' ? 'on' : '') + '" data-itf="all" data-guide="items-list-filter">All</button>' +
       '<button class="or' + (S.f === 'need' ? ' on' : '') + '" data-itf="need" data-guide="items-list-filter">Needs you<b>' + need + '</b></button>' +
@@ -171,6 +171,7 @@ export function makeCatalog(X) {
     $$('[data-itf]').forEach((b) => { b.onclick = () => { S.f = b.dataset.itf; S.more = PAGE; X.render(); }; });
     q('#it-cat').onchange = (e) => { S.cat = e.target.value; X.render(); };
     if (q('#it-add')) q('#it-add').onclick = () => openItem('new');
+    if (q('#it-import')) q('#it-import').onclick = () => X.startImport('items');
     function bindRows() {
       $$('[data-itrow]').forEach((tr) => { tr.onclick = () => openItem(tr.dataset.itrow); });
       if (q('#it-more')) q('#it-more').onclick = (e) => { e.stopPropagation(); S.more += PAGE; X.render(); };
@@ -280,7 +281,7 @@ export function makeCatalog(X) {
     const act = all.filter((c) => c.active !== false);
     const need = act.filter((c) => custIssues(c, st, t).length).length, off = all.length - act.length;
     const owes = act.reduce((s, c) => s + (c.owes || 0), 0);
-    return '<div class="hdr"><h1>Customers<span class="count">' + act.length.toLocaleString() + '</span></h1>' + (mgr ? '<button class="btn amber" id="cu-add" data-guide="customers-list-add">+ Add customer</button>' : '') + '</div>' +
+    return '<div class="hdr"><h1>Customers<span class="count">' + act.length.toLocaleString() + '</span></h1>' + (mgr ? '<button class="btn" id="cu-import" data-guide="customers-list-import">Bring in from your old system</button><button class="btn amber" id="cu-add" data-guide="customers-list-add">+ Add customer</button>' : '') + '</div>' +
       '<div class="bar"><input class="inp q" id="cu-q" type="search" placeholder="Search name, store #, phone or license #" value="' + esc(S.q) + '" data-guide="customers-list-search">' +
       '<div class="seg2"><button class="' + (S.f === 'all' ? 'on' : '') + '" data-cuf="all" data-guide="customers-list-filter">All</button>' +
       '<button class="or' + (S.f === 'need' ? ' on' : '') + '" data-cuf="need" data-guide="customers-list-filter">Needs you<b>' + need + '</b></button>' +
@@ -300,6 +301,7 @@ export function makeCatalog(X) {
     $$('[data-cuf]').forEach((b) => { b.onclick = () => { S.f = b.dataset.cuf; X.render(); }; });
     q('#cu-lvl').onchange = (e) => { S.lvl = e.target.value; X.render(); };
     if (q('#cu-add')) q('#cu-add').onclick = () => openCust('new');
+    if (q('#cu-import')) q('#cu-import').onclick = () => X.startImport('customers');
     function bindRows() {
       $$('[data-curow]').forEach((tr) => { tr.onclick = () => openCust(tr.dataset.curow); });
       if (q('#cu-more')) q('#cu-more').onclick = (e) => { e.stopPropagation(); S.more += PAGE; X.render(); };
@@ -308,10 +310,11 @@ export function makeCatalog(X) {
   }
 
   // ----- one customer, full page -----
-  const CU_KEYS = ['name', 'store_no', 'phone', 'email', 'addr', 'city', 'state', 'zip', 'level', 'terms', 'credit_limit', 'tobacco', 'delivery', 'route', 'rep', 'ship_to', 'since', 'active'];
+  const CU_KEYS = ['name', 'store_no', 'phone', 'email', 'addr', 'city', 'state', 'zip', 'level', 'terms', 'credit_limit', 'tobacco', 'delivery', 'route', 'rep', 'ship_to', 'since', 'active', 'opening'];
   function custDraft(c) {
     const d = {};
-    CU_KEYS.forEach((k) => { d[k] = c && c[k] != null ? (k === 'credit_limit' ? String(c[k]) : c[k]) : ''; });
+    CU_KEYS.forEach((k) => { d[k] = c && c[k] != null ? (k === 'credit_limit' || k === 'opening' ? String(Number(c[k]) || (k === 'opening' ? '0' : c[k])) : c[k]) : ''; });
+    if (!c) d.opening = '0';
     if (!c) { d.level = sets().default_level; d.terms = 'cod'; d.tobacco = true; d.active = true; d.state = (co() || {}).home || ''; }
     d.contacts = c ? copy(c.contacts || []) : [{ name: '', role: 'Owner', phone: '' }];
     return d;
@@ -425,7 +428,8 @@ export function makeCatalog(X) {
       sel('Price level', 'level', levels().map((l) => opt(l.n, l.name, +d.level === l.n)).join('')) + sel('Terms', 'terms', TERMS.map((t) => opt(t[0], t[1], t[0] === d.terms)).join('')) +
       inp('Credit limit', 'credit_limit', ' inputmode="decimal" placeholder="No limit"') + sel('Buys tobacco', 'tobacco', opt('true', 'Yes', d.tobacco !== false) + opt('false', 'No', d.tobacco === false)) +
       inp('Delivery day', 'delivery', ' list="days"') + inp('Route', 'route') + inp('Sales rep', 'rep') + inp('Customer since', 'since', ' type="date"') +
-      inp('Ships to', 'ship_to', ' placeholder="Same as the store"', 'span2') + '</div>' +
+      inp('Ships to', 'ship_to', ' placeholder="Same as the store"', 'span2') +
+      ((co() || {}).role === 'owner' ? inp('Starting balance (owed before StoreOwl)', 'opening', ' inputmode="decimal"', 'span2') : '') + '</div>' +
       '<datalist id="days">' + ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Pick up'].map((x) => '<option value="' + x + '">').join('') + '</datalist>' +
       (!isNew && !ro ? '<label class="chk1"><input type="checkbox" id="cu-active"' + (d.active === false ? '' : ' checked') + ' data-guide="customers-details-active"> Still a customer</label>' : '') +
       (ro ? '<p class="sm">Only owners and managers can change these.</p>' : '') + '</div></div>' +
@@ -538,7 +542,9 @@ export function makeCatalog(X) {
       S.err = ''; X.render();
     };
     if (q('#cu-save')) q('#cu-save').onclick = async () => {
-      const p = Object.assign({}, d, { credit_limit: num(d.credit_limit), since: d.since || null });
+      const p = Object.assign({}, d, { credit_limit: num(d.credit_limit), since: d.since || null, opening: num(d.opening) || 0 });
+      if ((co() || {}).role !== 'owner' || (S.open !== 'new' && String(d.opening) === String(JSON.parse(S.orig).opening))) delete p.opening;
+      if (p.opening != null && isNaN(p.opening)) { S.err = 'The starting balance isn’t a number.'; const e = q('#cu-err'); e.textContent = S.err; e.className = 'bad'; return; }
       const bad = custCheck(p);
       if (bad) { S.err = bad; const e = q('#cu-err'); e.textContent = bad; e.className = 'bad'; return; }
       if (S.open !== 'new') p.id = S.data.id;

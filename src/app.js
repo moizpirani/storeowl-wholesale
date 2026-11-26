@@ -7,6 +7,7 @@
 import { owlSvg } from './owl.js';
 import { STATES, stateName, neighborsOf, cleanStates, statesLine } from './states.js';
 import { makeCatalog } from './catalog.js';
+import { makeImport } from './importui.js';
 import { custIssues, itemIssues, settingsOf, todayIso, licName } from './rules.js';
 
 const IC = {
@@ -62,7 +63,9 @@ export function startApp(root, db) {
   const isOwner = () => (co() || {}).role === 'owner';
   const isMgr = () => ['owner', 'manager'].includes((co() || {}).role);
   const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
-    render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c) });
+    render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k) });
+  const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
+  const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
     try {
@@ -233,7 +236,7 @@ export function startApp(root, db) {
   function officeHtml() {
     const c = co();
     const rail = '<nav class="rail" aria-label="Menu"><div class="railbrand" title="StoreOwl Wholesale">' + owlSvg({}) + '</div>' +
-      MENU.map((m) => '<button class="railbtn' + (A.view === m.k ? ' on' : '') + (m.phase ? ' later' : '') + '" data-go="' + m.k + '" data-guide="menu-' + m.k + '">' + ic(m.k) + '<span>' + m.n + '</span></button>').join('') + '</nav>';
+      MENU.map((m) => '<button class="railbtn' + ((A.view === 'import' ? (A.im && A.im.kind) || 'items' : A.view) === m.k ? ' on' : '') + (m.phase ? ' later' : '') + '" data-go="' + m.k + '" data-guide="menu-' + m.k + '">' + ic(m.k) + '<span>' + m.n + '</span></button>').join('') + '</nav>';
     const sw = A.companies.length > 1
       ? '<select id="co-pick" class="copick" data-guide="common-company-switch">' + A.companies.map((x) => opt(x.id, x.name, x.id === A.cid)).join('') + '</select>'
       : '<span class="coname">' + esc(c.name) + '</span>';
@@ -241,11 +244,13 @@ export function startApp(root, db) {
       '<details class="acct"><summary data-guide="common-account">' + esc(A.me.email) + ' ▾</summary><div class="acctmenu"><span>' + ROLE[c.role] + '</span>' +
       '<button class="btn" id="sign-out" data-guide="common-sign-out">Sign out</button></div></details></header>';
     const m = MENU.find((x) => x.k === A.view) || MENU[0];
+    const menuOn = A.view === 'import' ? (A.im && A.im.kind) || 'items' : A.view;
     let page;
     if (A.view === 'home') page = homeHtml();
     else if (A.view === 'settings') page = settingsHtml();
     else if (A.view === 'items') page = cat.itemsHtml();
     else if (A.view === 'customers') page = cat.custHtml();
+    else if (A.view === 'import') page = imp.html();
     else page = '<h1>' + m.n + '</h1><div class="card soon"><b>Not built yet</b><span>Comes in Phase ' + m.phase + ' of the build plan.</span></div>';
     const toast = A.msg ? '<div class="toast' + (A.bad ? ' bad' : '') + '" role="status">' + esc(A.msg) + '<button id="toast-x" aria-label="Close" data-guide="common-message-close">×</button></div>' : '';
     return rail + '<div class="shell">' + top + '<main class="page">' + page + '</main></div>' + toast;
@@ -267,6 +272,7 @@ export function startApp(root, db) {
     if (A.view === 'settings') bindSettings();
     if (A.view === 'items') cat.bindItems();
     if (A.view === 'customers') cat.bindCust();
+    if (A.view === 'import') imp.bind();
   }
 
   // ----- Home -----

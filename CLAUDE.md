@@ -59,4 +59,15 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
     state location number, tobacco, vapor, hemp, beer, with expiry and "copy on file". **Tobacco license ended or missing = tobacco
     stopped** (Settings → License rules: stop or only warn; remind 0–90 days before). Customers who don't buy tobacco skip that check.
     Owes / past due / buys a week show $0 until invoices (Phase 2) and payments (Phase 3).
-  - Not built yet in Phase 1: Bring in from your old system (import with a "balances match" check), uploading license copies.
+  - Not built yet in Phase 1: uploading license copies.
+- **Phase 1, part 2 = Bring in from your old system (built 2026-11-26, Moiz said "Yes"; database migration
+  `phase1_import_and_starting_balances_2026_11_26` on the test database; code committed on `main` locally, NOT pushed to test or live):**
+  `src/importer.js` (pure: CSV / Excel reading, heading row found, column guessing incl. price levels by name, UPC from Excel's
+  scientific notation refused, 11-digit UPC fixed only when the check digit then works, dates, terms, levels, carton / roll sizes;
+  `buildItems` / `buildCustomers` → good / bad (left out with the reason) / skip (already in StoreOwl: same UPC, or same name + store #);
+  customers also `balance` and `outBal` = balances on rows left out). `src/importui.js` = the 4-step page (Upload · Match columns ·
+  Check · Bring it in) opened from Items / Customers "Bring in" (`it-import` / `cu-import`): the Check step asks what the old system says
+  customers owe and says "Balances match to the cent" or "Off by $X" (and when the gap = the rows left out, says so); rows go in batches
+  of 500; every import can be taken back (two taps; deletes what it added). Database: `customers.opening` = the starting balance (what
+  they owe until Phase 3 payments; owners only can change it, `_opening_put`), `imports` table, `items/customers.import_id`,
+  `import_start` / `import_items` / `import_customers` / `import_finish` / `imports_list` / `import_undo` (managers+, ≤1000 rows a call).

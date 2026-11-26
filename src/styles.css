@@ -294,3 +294,26 @@ h2.mt{margin-top:18px}
   .kpis{grid-template-columns:1fr}
   .g3{grid-template-columns:1fr 1fr}
 }
+
+/* Bring in from your old system */
+.steps3{display:flex;margin:0 0 18px;border-bottom:1px solid var(--line)}
+.steps3 span{font-size:13px;font-weight:600;color:var(--muted);padding:10px 0;margin-right:28px;border-bottom:2px solid transparent;margin-bottom:-1px}
+.steps3 span.done{color:var(--teal)}
+.steps3 span.on{color:var(--ink);border-bottom-color:var(--amber)}
+.imp{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:18px;align-items:start}
+.chk{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #EEF1F4;font-size:14px}
+.chk b{font-variant-numeric:tabular-nums}
+.match{display:flex;align-items:center;gap:10px;background:#E6F4F1;color:var(--teal);font-weight:700;border-radius:8px;padding:12px 14px;margin:4px 0 0;font-size:14px}
+.match.off{background:#FEF3E2;color:var(--orange)}
+.drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:2px dashed var(--line2);border-radius:10px;padding:38px 20px;margin-top:6px;cursor:pointer;text-align:center;background:#FAFBFC}
+.drop.over,.drop:hover{border-color:var(--amber);background:#FFFBF0}
+.drop input{position:absolute;width:1px;height:1px;opacity:0}
+.drop b{font-size:15px}.drop span{font-size:13px;color:var(--muted)}
+.btn.red{color:#fff;background:var(--red);border-color:var(--red)}
+.imp .tcard .cch{background:#fff}
+.imp .tcard .t th{border-radius:0}
+.hdr .btn+.btn{margin-left:0}
+@media (max-width:1199px){.imp{grid-template-columns:1fr}}
+.match.off{flex-wrap:wrap}
+.match .why{flex-basis:100%;font-weight:500;color:var(--ink)}
+[data-imundo1],[data-imundo]{white-space:nowrap}

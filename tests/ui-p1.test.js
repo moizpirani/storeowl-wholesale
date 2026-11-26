@@ -165,3 +165,39 @@ test('staff see items without costs and can’t change customers', async () => {
   assert.equal(db.S.notes.length, 1);
   void A;
 });
+
+test('bring in customers from a file, check the balances, take it back', async () => {
+  const db = makeFake({ signedIn: 'owner@example.com' });
+  await db.createCompany({ name: 'Knox', home: 'TN' });
+  document.getElementById('app').innerHTML = '';
+  const A = startApp(document.getElementById('app'), db);
+  await tick();
+  $('[data-go="customers"]').click(); await tick(4);
+  $('#cu-import').click(); await tick(4);
+  assert.equal(A.view, 'import'); checkTags('import pick');
+  const csv = 'Customer,Store #,Terms,Level,Balance,Resale #,Tobacco License,Tobacco Exp\nClinton Hwy Market,104,Net 7,A,"1,284.40",0106,46-1,9/30/2027\nPowell Quick Stop,307,Net 7,B,300,0107,,\nBad One,1,whenever,,0,,,';
+  const f = new dom.window.File([csv], 'customers.csv', { type: 'text/csv' });
+  if (!f.text) f.text = async () => csv;
+  const inp = $('#im-file'); Object.defineProperty(inp, 'files', { value: [f] }); inp.dispatchEvent(new dom.window.Event('change'));
+  await tick(6);
+  assert.equal(A.im.step, 'match'); assert.equal(A.im.kind, 'customers'); checkTags('import match');
+  assert.equal($('[data-immap="4"]').value, 'balance');
+  $('#im-check').click(); await tick(6);
+  assert.equal(A.im.step, 'check'); checkTags('import check');
+  assert.match($('#app').textContent, /StoreOwl doesn’t know the terms “whenever”/);
+  assert.match($('#app').textContent, /\$1,584\.40/);
+  const old = $('#im-old'); type(old, '1,584.40');
+  assert.equal($('#im-old'), old, 'typing never redraws');
+  assert.match($('#im-match').textContent, /match to the cent/);
+  type(old, '1600'); assert.match($('#im-match').textContent, /Off by \$15\.60/);
+  $('#im-go').click(); await tick(8);
+  assert.equal(A.im.step, 'done'); checkTags('import done');
+  assert.equal(db.S.customers.length, 2);
+  assert.equal(db.S.customers.find((c) => c.name === 'Clinton Hwy Market').opening, 1284.4);
+  assert.match($('#app').textContent, /Brought in 2 customers/);
+  // Take it back (two taps).
+  $('[data-imundo1]').click(); await tick();
+  $('[data-imundo]').click(); await tick(4);
+  assert.equal(db.S.customers.length, 0);
+  assert.match($('.toast').textContent, /Took back 2 customers/);
+});
