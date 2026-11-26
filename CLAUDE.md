@@ -105,8 +105,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   **Add photos** (`#it-photos`): pick or drop many photos; a file named with any size's UPC (leading zeros or the check digit may be
   missing, `upcSame`) or the item # matches by itself (`photoMatch`), others get "Pick the item"; Save N photos (last one wins for one item).
 - **Phase 1, part 6 = quantity breaks (built 2026-11-26, Moiz approved the pictures, then "yes build it and put it to test"; migration
-  `phase1_quantity_breaks_2026_11_26` NOT YET on the test database — the database tool's approval question went unanswered again;
-  branch `test` NOT pushed until it is):** per size `item_sizes.breaks` = [{min, off}] (buys at least `min` → `off` dollars off each, at
+  `phase1_quantity_breaks_2026_11_26` on the test database; ON TEST since 2026-11-26, Moiz: "ok go ahead"):** per size `item_sizes.breaks` = [{min, off}] (buys at least `min` → `off` dollars off each, at
   EVERY price level — Moiz chose "$ off each", not a price per level), `items.break_group` (items with the same group name count together,
   e.g. any Seneca cartons). Checked in `breaksCheck` (rules.js) and `_breaks_clean` (database): whole number ≥ 2, amount off > 0, no
   quantity twice, more bought takes off at least as much, never more than the price. Item panel: **Quantity breaks** under Sizes and
