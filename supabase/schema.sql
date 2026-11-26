@@ -830,3 +830,115 @@ revoke execute on function import_start(uuid,jsonb), import_items(uuid,uuid,json
   imports_list(uuid), import_undo(uuid,uuid) from public, anon;
 grant execute on function import_start(uuid,jsonb), import_items(uuid,uuid,jsonb), import_customers(uuid,uuid,jsonb), import_finish(uuid,uuid),
   imports_list(uuid), import_undo(uuid,uuid) to authenticated;
+
+-- =====================================================================
+-- Phase 1, part 3: license copies (2026-11-26)
+-- A photo or PDF of each license. Files live in the private storage bucket `licenses`
+-- under <company>/<customer>/<file>. A copy is never deleted, only hidden (removed_at),
+-- so what was on file and when can always be shown. The number and end date at the time are kept on the copy.
+-- =====================================================================
+create table if not exists license_copies (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  customer_id uuid not null references customers(id) on delete cascade,
+  kind text not null check (kind in ('resale','location','tobacco','vapor','hemp','beer')),
+  path text not null unique,
+  name text not null default '',
+  type text not null default '',
+  size int,
+  number text not null default '',
+  expires date,
+  by_name text not null default '',
+  at timestamptz not null default now(),
+  removed_at timestamptz
+);
+create index if not exists license_copies_cust on license_copies(customer_id, kind, at desc);
+alter table license_copies enable row level security;
+revoke all on license_copies from anon, authenticated;
+
+-- For the storage rules: may the signed-in person use files under this company? (min = staff to look, manager to add)
+create or replace function copy_path_ok(p_name text, p_min text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare cid uuid; r text;
+begin
+  begin cid := split_part(p_name, '/', 1)::uuid; exception when others then return false; end;
+  select role into r from company_members where company_id = cid and user_id = auth.uid();
+  if r is null then return false; end if;
+  return case p_min when 'staff' then true when 'manager' then r in ('owner','manager') else r = 'owner' end;
+end $$;
+revoke execute on function copy_path_ok(text,text) from public, anon;
+grant execute on function copy_path_ok(text,text) to authenticated;
+
+-- The bucket and its rules (only on Supabase; the test database has no storage).
+do $$ begin
+  if exists (select 1 from pg_namespace where nspname = 'storage') then
+    insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
+      values ('licenses', 'licenses', false, 10485760, array['image/jpeg','image/png','image/webp','image/heic','image/heif','application/pdf'])
+      on conflict (id) do update set public = false, file_size_limit = 10485760,
+        allowed_mime_types = array['image/jpeg','image/png','image/webp','image/heic','image/heif','application/pdf'];
+    execute 'drop policy if exists "license copies add" on storage.objects';
+    execute 'drop policy if exists "license copies look" on storage.objects';
+    execute $p$create policy "license copies add" on storage.objects for insert to authenticated
+      with check (bucket_id = 'licenses' and public.copy_path_ok(name, 'manager'))$p$;
+    execute $p$create policy "license copies look" on storage.objects for select to authenticated
+      using (bucket_id = 'licenses' and public.copy_path_ok(name, 'staff'))$p$;
+  end if;
+end $$;
+
+create or replace function _copy_flag(p_customer uuid, p_kind text) returns void
+language sql security definer set search_path = public as $$
+  update customer_licenses set copy = exists (select 1 from license_copies where customer_id = p_customer and kind = p_kind and removed_at is null)
+  where customer_id = p_customer and kind = p_kind $$;
+revoke execute on function _copy_flag(uuid,text) from public, anon, authenticated;
+
+create or replace function customer_get(p_company uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_id and company_id = p_company) then raise exception 'customer not found'; end if;
+  return _cust_json(p_id) || jsonb_build_object(
+    'notes', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'text', text, 'by', by_name, 'at', at) order by at desc)
+      from customer_notes where customer_id = p_id), '[]'::jsonb),
+    'copies', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'kind', kind, 'path', path, 'name', name, 'type', type, 'number', number,
+        'expires', expires, 'by', by_name, 'at', at) order by at desc)
+      from license_copies where customer_id = p_id and removed_at is null), '[]'::jsonb),
+    'history', coalesce((select jsonb_agg(jsonb_build_object('at', at, 'by', by_name, 'what', what, 'detail', detail) order by at desc, id desc)
+      from (select * from change_log where company_id = p_company and detail->>'customer' = p_id::text order by at desc, id desc limit 100) h), '[]'::jsonb));
+end $$;
+
+-- The app uploads the file first, then tells the database about it.
+create or replace function copy_add(p_company uuid, p_customer uuid, p_kind text, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare pth text := coalesce(p->>'path',''); l customer_licenses;
+begin
+  perform _need(p_company, 'manager');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  if p_kind not in ('resale','location','tobacco','vapor','hemp','beer') then raise exception 'pick a license'; end if;
+  if pth not like p_company::text || '/' || p_customer::text || '/%' or pth like '%..%' then raise exception 'that file isn''t in the right place'; end if;
+  if coalesce(p->>'type','') !~ '^(image/|application/pdf$)' then raise exception 'pick a photo or a PDF'; end if;
+  select * into l from customer_licenses where customer_id = p_customer and kind = p_kind;
+  insert into license_copies(company_id, customer_id, kind, path, name, type, size, number, expires, by_name)
+    values (p_company, p_customer, p_kind, pth, left(coalesce(p->>'name',''),120), p->>'type', nullif(p->>'size','')::int,
+      coalesce(l.number,''), l.expires,
+      coalesce((select nullif(name,'') from company_members where company_id = p_company and user_id = auth.uid()), _my_email()));
+  perform _copy_flag(p_customer, p_kind);
+  perform _log(p_company, 'license copy added', jsonb_build_object('customer', p_customer, 'kind', p_kind, 'name', left(coalesce(p->>'name',''),120)));
+  return customer_get(p_company, p_customer);
+end $$;
+
+create or replace function copy_remove(p_company uuid, p_customer uuid, p_copy uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x license_copies;
+begin
+  perform _need(p_company, 'manager');
+  select * into x from license_copies where id = p_copy and customer_id = p_customer and company_id = p_company and removed_at is null;
+  if x.id is null then raise exception 'copy not found'; end if;
+  update license_copies set removed_at = now() where id = p_copy;
+  perform _copy_flag(p_customer, x.kind);
+  perform _log(p_company, 'license copy removed', jsonb_build_object('customer', p_customer, 'kind', x.kind, 'name', x.name));
+  return customer_get(p_company, p_customer);
+end $$;
+
+-- A renewed license: the current copy keeps the number and end date it was added with; the app shows the license's own.
+revoke execute on function copy_add(uuid,uuid,text,jsonb), copy_remove(uuid,uuid,uuid) from public, anon;
+grant execute on function copy_add(uuid,uuid,text,jsonb), copy_remove(uuid,uuid,uuid), customer_get(uuid,uuid) to authenticated;

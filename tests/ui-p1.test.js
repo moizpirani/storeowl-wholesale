@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
 const dom = new JSDOM('<!doctype html><body><div id="app"></div></body>', { url: 'https://wholesale.storeowl.app/' });
-global.window = dom.window; global.document = dom.window.document; global.localStorage = dom.window.localStorage;
+global.window = dom.window; global.document = dom.window.document; global.localStorage = dom.window.localStorage; global.FileReader = dom.window.FileReader; global.Image = dom.window.Image;
 dom.window.confirm = () => true;
 
 const { startApp } = await import('../src/app.js');
@@ -106,6 +106,29 @@ test('price levels, items and customers', async () => {
   type($$('[data-lk="2|expires"]')[0], '2026-11-01');
   $('#cl-save').click(); await tick();
   assert.match($('.chd').textContent, /Tobacco license ended Nov 1 · tobacco stopped/);
+
+  // A copy of the tobacco license (a PDF): it shows in the row, opens on the side, and a new copy keeps the old one.
+  const addCopy = async (name) => {
+    const f = new dom.window.File(['%PDF-1.4 sample'], name, { type: 'application/pdf' });
+    const inp = $('[data-lcadd="tobacco"]'); Object.defineProperty(inp, 'files', { value: [f] }); inp.dispatchEvent(new dom.window.Event('change'));
+    const n = (db.S.copies || []).length;
+    for (let i = 0; i < 20 && (db.S.copies || []).length === n; i++) await tick(2);
+    await tick(3);
+  };
+  await addCopy('lic-2025.pdf');
+  assert.ok($('#lc-pan'), 'the copy opens on the side'); checkTags('customer license copy');
+  assert.equal(db.S.copies.length, 1);
+  type('#lc-pan [data-lk="2|expires"]', '2027-11-01');
+  await addCopy('lic-2026.pdf');
+  assert.equal(db.S.copies.length, 2);
+  assert.match($('#lc-pan').textContent, /Copies on file · 2/);
+  $('#lc-save').click(); await tick(3);
+  assert.doesNotMatch($('.chd').textContent, /tobacco stopped/);
+  $('#lc-rm1').click(); await tick(); $('#lc-rm').click(); await tick(3);
+  assert.equal(db.S.copies.filter((x) => !x.removed_at).length, 1);
+  $('#lc-x').click(); await tick();
+  assert.equal($('#lc-pan'), null);
+  type($$('[data-lk="2|expires"]')[0], '2026-11-01'); $('#cl-save').click(); await tick(3);   // back to ended for the checks below
   $('[data-cutab="prices"]').click(); await tick(); checkTags('customer prices');
   assert.match($('#cp-rows').textContent, /\$33\.90/);
   assert.match($('#cp-rows').textContent, /Can’t sell · tobacco stopped/);

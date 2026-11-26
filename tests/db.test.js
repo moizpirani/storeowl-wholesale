@@ -128,6 +128,20 @@ test('Phase 1: price levels, items with sizes, customers, licenses, notes', asyn
   assert.equal(l1.licenses[0].kind, 'tobacco'); assert.equal(l1.licenses[0].expires, '2026-12-08');
   const l2 = await one(db, 'select license_put($1, $2, $3::jsonb)', [cid, cu.id, JSON.stringify({ kind: 'tobacco', number: '' })]);
   assert.equal(l2.licenses.length, 0);
+  // License copies: only files under this company and customer, never deleted, only hidden.
+  await one(db, 'select license_put($1, $2, $3::jsonb)', [cid, cu.id, JSON.stringify({ kind: 'tobacco', number: '46-331', expires: '2026-12-08' })]);
+  const c1 = await one(db, 'select copy_add($1, $2, $3, $4::jsonb)', [cid, cu.id, 'tobacco', JSON.stringify({ path: cid + '/' + cu.id + '/a.jpg', name: 'lic.jpg', type: 'image/jpeg', size: 1000 })]);
+  assert.equal(c1.copies.length, 1); assert.equal(c1.copies[0].number, '46-331'); assert.equal(c1.licenses.find((l) => l.kind === 'tobacco').copy, true);
+  await fails(db, 'select copy_add($1, $2, $3, $4::jsonb)', [cid, cu.id, 'tobacco', JSON.stringify({ path: 'other/' + cu.id + '/b.jpg', type: 'image/jpeg' })], /right place/);
+  await fails(db, 'select copy_add($1, $2, $3, $4::jsonb)', [cid, cu.id, 'tobacco', JSON.stringify({ path: cid + '/' + cu.id + '/b.exe', type: 'application/x-msdownload' })], /photo or a PDF/);
+  const c2 = await one(db, 'select copy_add($1, $2, $3, $4::jsonb)', [cid, cu.id, 'tobacco', JSON.stringify({ path: cid + '/' + cu.id + '/b.pdf', name: 'new.pdf', type: 'application/pdf' })]);
+  assert.equal(c2.copies.length, 2); assert.equal(c2.copies[0].name, 'new.pdf');
+  const c3 = await one(db, 'select copy_remove($1, $2, $3)', [cid, cu.id, c2.copies[0].id]);
+  assert.equal(c3.copies.length, 1);
+  assert.equal(await one(db, 'select count(*)::int from license_copies'), 2, 'removed copies are kept');
+  assert.ok(c3.history.some((h) => h.what === 'license copy removed'));
+  assert.equal(await one(db, "select copy_path_ok($1, 'manager')", [cid + '/x/y.jpg']), true);
+  assert.equal(await one(db, "select copy_path_ok($1, 'staff')", ['not-a-company/x.jpg']), false);
   const n1 = await one(db, 'select note_add($1, $2, $3)', [cid, cu.id, 'Pays by check on Fridays']);
   assert.equal(n1.notes[0].text, 'Pays by check on Fridays');
   assert.ok(n1.history.some((h) => h.what === 'license changed'));

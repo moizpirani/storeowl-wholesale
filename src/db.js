@@ -10,6 +10,14 @@ export function makeDb(sb) {
     if (error) throw new Error(plain(error.message));
     return data;
   }
+  // Copies are private: each one gets a link that works for an hour.
+  async function withUrls(c) {
+    const list = (c && c.copies) || [];
+    if (!list.length) return c;
+    const { data } = await sb.storage.from('licenses').createSignedUrls(list.map((x) => x.path), 3600);
+    (data || []).forEach((d, i) => { if (d && d.signedUrl) list[i].url = d.signedUrl; });
+    return c;
+  }
   return {
     async session() { const { data } = await sb.auth.getSession(); return data.session ? { email: data.session.user.email } : null; },
     onAuth(fn) { sb.auth.onAuthStateChange(function (ev, s) { fn(s ? { email: s.user.email } : null); }); },
@@ -37,12 +45,20 @@ export function makeDb(sb) {
     items: (id) => rpc('items_list', { p_company: id }),
     itemPut: (id, p) => rpc('item_put', { p_company: id, p }),
     customers: (id) => rpc('customers_list', { p_company: id }),
-    customer: (id, cust) => rpc('customer_get', { p_company: id, p_id: cust }),
-    customerPut: (id, p) => rpc('customer_put', { p_company: id, p }),
-    licensePut: (id, cust, p) => rpc('license_put', { p_company: id, p_customer: cust, p }),
-    copyAdd: async () => { throw new Error('License copies aren’t on this database yet'); },
-    copyRemove: async () => { throw new Error('License copies aren’t on this database yet'); },
-    noteAdd: (id, cust, text) => rpc('note_add', { p_company: id, p_customer: cust, p_text: text }),
+    customer: async (id, cust) => withUrls(await rpc('customer_get', { p_company: id, p_id: cust })),
+    customerPut: async (id, p) => withUrls(await rpc('customer_put', { p_company: id, p })),
+    licensePut: async (id, cust, p) => withUrls(await rpc('license_put', { p_company: id, p_customer: cust, p })),
+    // The file goes up first (private bucket), then the database is told about it.
+    async copyAdd(id, cust, kind, f) {
+      const blob = await (await fetch(f.url)).blob();
+      const ext = /pdf/.test(f.type) ? 'pdf' : /png/.test(f.type) ? 'png' : 'jpg';
+      const path = id + '/' + cust + '/' + kind + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.' + ext;
+      const up = await sb.storage.from('licenses').upload(path, blob, { contentType: f.type, upsert: false });
+      if (up.error) throw new Error(plain(up.error.message));
+      return withUrls(await rpc('copy_add', { p_company: id, p_customer: cust, p_kind: kind, p: { path, name: f.name, type: f.type, size: blob.size } }));
+    },
+    copyRemove: async (id, cust, copy) => withUrls(await rpc('copy_remove', { p_company: id, p_customer: cust, p_copy: copy })),
+    noteAdd: async (id, cust, text) => withUrls(await rpc('note_add', { p_company: id, p_customer: cust, p_text: text })),
     importStart: (id, p) => rpc('import_start', { p_company: id, p }),
     importItems: (id, imp, rows) => rpc('import_items', { p_company: id, p_import: imp, p_rows: rows }),
     importCustomers: (id, imp, rows) => rpc('import_customers', { p_company: id, p_import: imp, p_rows: rows }),
@@ -57,6 +73,8 @@ export function plain(m) {
   m = String(m || '');
   if (/rate limit|security purposes/i.test(m)) return 'Too many codes asked for. Wait a minute and try again.';
   if (/expired|invalid.*(otp|token)|token.*(invalid|expired)/i.test(m)) return 'That code is wrong or too old. Ask for a new one.';
+  if (/exceeded the maximum allowed size|Payload too large/i.test(m)) return 'That file is bigger than 10 MB.';
+  if (/mime type|invalid_mime/i.test(m)) return 'Pick a photo or a PDF.';
   if (/Failed to fetch|NetworkError|network/i.test(m)) return 'No internet connection. Try again.';
   return m.replace(/^(ERROR:\s*)/, '').replace(/^./, function (c) { return c.toUpperCase(); });
 }

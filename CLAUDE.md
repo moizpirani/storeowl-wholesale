@@ -59,7 +59,6 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
     state location number, tobacco, vapor, hemp, beer, with expiry and "copy on file". **Tobacco license ended or missing = tobacco
     stopped** (Settings → License rules: stop or only warn; remind 0–90 days before). Customers who don't buy tobacco skip that check.
     Owes / past due / buys a week show $0 until invoices (Phase 2) and payments (Phase 3).
-  - Not built yet in Phase 1: uploading license copies.
 - **Phase 1, part 2 = Bring in from your old system (built 2026-11-26, Moiz said "Yes"; database migration
   `phase1_import_and_starting_balances_2026_11_26` on the test database; ON TEST since 2026-11-26, branch `test`; not on `main` live):**
   `src/importer.js` (pure: CSV / Excel reading, heading row found, column guessing incl. price levels by name, UPC from Excel's
@@ -71,3 +70,13 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   of 500; every import can be taken back (two taps; deletes what it added). Database: `customers.opening` = the starting balance (what
   they owe until Phase 3 payments; owners only can change it, `_opening_put`), `imports` table, `items/customers.import_id`,
   `import_start` / `import_items` / `import_customers` / `import_finish` / `imports_list` / `import_undo` (managers+, ≤1000 rows a call).
+- **Phase 1, part 3 = license copies (built 2026-11-26, Moiz approved the pictures, then "yes build and put it on test";
+  migration `phase1_license_copies_2026_11_26` on the test database; ON TEST since 2026-11-26, branch `test`):** Customers → a customer →
+  Licenses: each row's Copy cell = **Add copy** (photo or PDF, ≤10 MB; photos shrunk to ≤1600 px JPEG on the device) or a small picture of
+  the current copy; tapping it opens the side window `#lc-pan` (full copy, number + end date boxes with Save, Added by / when, Open full size,
+  Remove two taps, Replace with a new copy, **Copies on file** = every copy, the current one showing the license as it is now, older ones
+  the number / end date they were added with). Managers+ add / remove; staff look. Files: private storage bucket `licenses`, path
+  `<company>/<customer>/<kind>-<time>-<rand>.<ext>`, storage rules `license copies add` (managers+) / `license copies look` (members) via
+  `copy_path_ok(name, min)`; the app shows each with a signed link good for an hour (`withUrls` in src/db.js). Table `license_copies`
+  (never deleted, `removed_at`), `copy_add` (path must be under that company / customer, photo or PDF only), `copy_remove`,
+  `customer_get` returns `copies`. The simpler import (no Match columns page) is on branch `import-simple`, not on test (Moiz: leave it).
