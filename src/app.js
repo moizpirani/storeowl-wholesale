@@ -1,10 +1,13 @@
-// StoreOwl Wholesale, Phase 0: sign in, company setup (with the state picker), the side menu, Home and Settings.
+// StoreOwl Wholesale: sign in, company setup (with the state picker), the side menu, Home and Settings (Phase 0);
+// Items and Customers come from catalog.js (Phase 1).
 // Same look as StoreOwl Back Office: navy side menu with icons, white top bar, grey page, white cards,
 // one amber main button per screen (last on the right). Every control has a data-guide tag for the future help chat.
 // Typing never redraws the page: boxes keep their value in state on input; the page redraws on Save / Next.
 
 import { owlSvg } from './owl.js';
 import { STATES, stateName, neighborsOf, cleanStates, statesLine } from './states.js';
+import { makeCatalog } from './catalog.js';
+import { custIssues, itemIssues, settingsOf, todayIso, licName } from './rules.js';
 
 const IC = {
   home: 'M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -24,8 +27,8 @@ export const MENU = [
   { k: 'home', n: 'Home' },
   { k: 'counter', n: 'Counter', phase: 2 },
   { k: 'invoices', n: 'Invoices', phase: 2 },
-  { k: 'customers', n: 'Customers', phase: 1 },
-  { k: 'items', n: 'Items', phase: 1 },
+  { k: 'customers', n: 'Customers' },
+  { k: 'items', n: 'Items' },
   { k: 'payments', n: 'Payments', phase: 3 },
   { k: 'compliance', n: 'Compliance', phase: 5 },
   { k: 'reports', n: 'Reports', phase: 3 },
@@ -58,6 +61,8 @@ export function startApp(root, db) {
   const co = () => A.companies.find((c) => c.id === A.cid) || null;
   const isOwner = () => (co() || {}).role === 'owner';
   const isMgr = () => ['owner', 'manager'].includes((co() || {}).role);
+  const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
+    render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c) });
 
   async function boot() {
     try {
@@ -74,7 +79,7 @@ export function startApp(root, db) {
     if (A.phase === 'setup' && !A.su.f.email) A.su.f.email = A.me.email;
     render();
   }
-  function pickCompany(id) { A.cid = id; try { localStorage.setItem('sow-company', id); } catch (e) { /* ok */ } A.co = A.st = A.people = A.hist = null; render(); }
+  function pickCompany(id) { A.cid = id; try { localStorage.setItem('sow-company', id); } catch (e) { /* ok */ } A.co = A.st = A.people = A.hist = A.items = A.custs = A.it = A.cu = A.lv = A.lr = null; render(); }
   function say(m, bad) { A.msg = m; A.bad = !!bad; }
 
   function render() {
@@ -239,17 +244,29 @@ export function startApp(root, db) {
     let page;
     if (A.view === 'home') page = homeHtml();
     else if (A.view === 'settings') page = settingsHtml();
+    else if (A.view === 'items') page = cat.itemsHtml();
+    else if (A.view === 'customers') page = cat.custHtml();
     else page = '<h1>' + m.n + '</h1><div class="card soon"><b>Not built yet</b><span>Comes in Phase ' + m.phase + ' of the build plan.</span></div>';
     const toast = A.msg ? '<div class="toast' + (A.bad ? ' bad' : '') + '" role="status">' + esc(A.msg) + '<button id="toast-x" aria-label="Close" data-guide="common-message-close">×</button></div>' : '';
     return rail + '<div class="shell">' + top + '<main class="page">' + page + '</main></div>' + toast;
   }
   function bindOffice() {
-    root.querySelectorAll('[data-go]').forEach((b) => { b.onclick = () => { A.view = b.dataset.go; A.msg = ''; render(); }; });
+    root.querySelectorAll('[data-go]').forEach((b) => { b.onclick = () => {
+      const C = A.cu;
+      if (C && C.open && (C.open === 'new' || JSON.stringify(C.ed) !== C.orig || (C.led && JSON.stringify(C.led) !== C.lorig)) && !window.confirm('Your changes to this customer aren’t saved. Leave without saving?')) return;
+      const I = A.it;
+      if (I && I.sel && I.ed && (I.sel === 'new' || JSON.stringify(I.ed) !== I.orig) && !window.confirm('This item isn’t saved. Leave it without saving?')) return;
+      if (b.dataset.go === 'customers' && C) { C.open = null; C.data = null; }
+      if (b.dataset.go === 'items' && I) { I.sel = null; I.ed = null; }
+      A.view = b.dataset.go; A.msg = ''; render();
+    }; });
     const p = root.querySelector('#co-pick'); if (p) p.onchange = () => pickCompany(p.value);
     root.querySelector('#sign-out').onclick = signOut;
     const tx = root.querySelector('#toast-x'); if (tx) tx.onclick = () => { A.msg = ''; render(); };
     if (A.view === 'home') bindHome();
     if (A.view === 'settings') bindSettings();
+    if (A.view === 'items') cat.bindItems();
+    if (A.view === 'customers') cat.bindCust();
   }
 
   // ----- Home -----
@@ -260,29 +277,38 @@ export function startApp(root, db) {
     const row = (done, t, s, go, guide) => '<tr><td class="ck">' + (done ? '<span class="tag ok">✓ Done</span>' : '<span class="tag grey">Next</span>') + '</td><td><b>' + t + '</b><span class="sm">' + s + '</span></td><td class="r">' +
       (go ? '<button class="btn sm" data-hgo="' + go + '" data-guide="' + guide + '">Open</button>' : '<span class="sm">Coming soon</span>') + '</td></tr>';
     const invited = A.people && (A.people.members.length > 1 || A.people.invites.length > 0);
+    const items = (A.items || []).filter((x) => x.active !== false), custs = (A.custs || []).filter((x) => x.active !== false);
+    const st = settingsOf(c), t = todayIso();
+    const cNeed = custs.filter((x) => custIssues(x, st, t).length).length, iNeed = items.filter((x) => itemIssues(x, c.levels).length).length;
+    const n = (v) => (A.items ? v.toLocaleString() : '…');
     return '<h1>' + greet() + (name ? ', ' + esc(name) : '') + '</h1>' +
-      '<div class="bxs">' + box('Sales today', '$0.00', 'No invoices yet') + box('Open invoices', '0', '') + box('Customers', '0', '') + box('Selling in', String(1 + c.others.length), esc(statesLine(c.home, c.others))) + '</div>' +
+      '<div class="bxs">' + box('Sales today', '$0.00', 'No invoices yet') + box('Customers', n(custs.length), cNeed ? '<span class="miss">' + cNeed + ' need you</span>' : '') +
+      box('Items', n(items.length), iNeed ? '<span class="miss">' + iNeed + ' need you</span>' : '') + box('Selling in', String(1 + c.others.length), esc(statesLine(c.home, c.others))) + '</div>' +
       '<div class="card"><h2>Getting set up</h2><table class="t"><tbody>' +
       row(true, 'Company details', esc(c.name), 'settings:company', 'home-setup-company') +
       row(true, 'Your states', esc(statesLine(c.home, c.others)), 'settings:states', 'home-setup-states') +
       row(!!invited, 'Your team', invited ? 'Invited' : 'Optional', 'settings:people', 'home-setup-team') +
-      row(false, 'Items', 'Phase 1', null) + row(false, 'Customers', 'Phase 1', null) +
+      row(items.length > 0, 'Items', items.length ? items.length.toLocaleString() + ' items' : 'Add what you sell, with sizes and prices', 'items:', 'home-setup-items') +
+      row(custs.length > 0, 'Customers', custs.length ? custs.length.toLocaleString() + ' customers' : 'Add your stores, their licenses and terms', 'customers:', 'home-setup-customers') +
       '</tbody></table></div>';
   }
   function bindHome() {
-    root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; A.stab = t; render(); }; });
+    root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; if (t) A.stab = t; render(); }; });
+    cat.load();
     if (!A.people) db.members(A.cid).then((p) => { A.people = p; if (A.view === 'home') render(); }).catch(() => { /* home still works */ });
   }
 
   // ----- Settings: Company · States · People · History -----
   function settingsHtml() {
-    const tabs = [['company', 'Company'], ['states', 'States'], ['people', 'People']].concat(isMgr() ? [['history', 'History']] : []);
+    const tabs = [['company', 'Company'], ['states', 'States'], ['levels', 'Price levels'], ['licenses', 'License rules'], ['people', 'People']].concat(isMgr() ? [['history', 'History']] : []);
     if (!tabs.some((t) => t[0] === A.stab)) A.stab = 'company';
     const bar = '<nav class="tabs">' + tabs.map((t) => '<button class="' + (A.stab === t[0] ? 'on' : '') + '" data-stab="' + t[0] + '" data-guide="settings-tab">' + t[1] + '</button>').join('') + '</nav>';
     let body = '';
     if (A.stab === 'company') body = companyFormHtml();
     if (A.stab === 'states') body = statesFormHtml();
     if (A.stab === 'people') body = peopleHtml();
+    if (A.stab === 'levels') body = cat.levelsHtml();
+    if (A.stab === 'licenses') body = cat.licRulesHtml();
     if (A.stab === 'history') body = historyHtml();
     return '<h1>Settings</h1>' + bar + body;
   }
@@ -291,6 +317,8 @@ export function startApp(root, db) {
     if (A.stab === 'company') bindCompanyForm();
     if (A.stab === 'states') bindStatesForm();
     if (A.stab === 'people') bindPeople();
+    if (A.stab === 'levels') cat.bindLevels();
+    if (A.stab === 'licenses') cat.bindLicRules();
     if (A.stab === 'history') bindHistory();
   }
   function saveBar(dirty, guideBase) {
@@ -400,6 +428,9 @@ export function startApp(root, db) {
       if (x.what === 'states changed' && d.after) return 'States: ' + statesLine(d.after.home, d.after.others);
       if (x.what === 'invited') return 'Invited ' + d.email + ' as ' + (ROLE[d.role] || d.role);
       if (x.what === 'company made') return 'Company made · ' + stateName(d.home);
+      if (x.what === 'price levels changed' && d.after) return 'Price levels: ' + d.after.map((l) => l.name).join(' · ');
+      if (['item added', 'item changed', 'customer added', 'customer changed'].includes(x.what)) return x.what.charAt(0).toUpperCase() + x.what.slice(1) + ' · ' + (d.name || '');
+      if (x.what === 'license changed') return 'License changed · ' + licName(d.kind);
       return x.what.charAt(0).toUpperCase() + x.what.slice(1);
     };
     return '<div class="card"><h2>History</h2><table class="t"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' +

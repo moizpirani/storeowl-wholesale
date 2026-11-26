@@ -21,13 +21,13 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
 (names never change once given); `tests/ui.test.js` fails without them.
 
 ## Code
-- Vite single-page app: `src/app.js` (screens), `src/db.js` (the only door to the database + a pretend backend
+- Vite single-page app: `src/app.js` (sign in, setup, menu, Home, Settings), `src/catalog.js` (Items, Customers, Settings → Price levels · License rules), `src/rules.js` (pure rules: license states, tobacco stop, item / customer checks), `src/demo.js` (made-up data for pictures only), `src/db.js` (the only door to the database + a pretend backend
   `makeFake` for tests and pictures), `src/states.js`, `src/owl.js` (copied from StoreOwl), `src/styles.css`.
 - Database: Supabase project **`twedblbvzdmlhtmnysgo` "StoreOwl Wholesale (Test)"** (us-east-1). `supabase/schema.sql`
   is the whole database, safe to re-run. Tables are locked; everything goes through security-definer functions
   that check `_need(company, role)` (owner > manager > staff). Every change is written to `change_log`.
 - Tests: `npm test` (node --test; jsdom for screens, PGlite runs schema.sql for the database). Run before every push.
-- Pictures: `VITE_FAKE=1 npx vite` runs on the pretend database (never set VITE_FAKE in Vercel).
+- Pictures: `VITE_FAKE=1 npx vite` runs on the pretend database; add `VITE_FAKE_DEMO=1 VITE_FAKE_USER=moiz@example.com` for made-up items and customers (never set VITE_FAKE in Vercel).
 
 ## Where things stand
 - **Phase 0 (built 2026-11-26, pictures shown, not deployed yet):** email-code sign in (6 boxes that fill from the
@@ -47,3 +47,16 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   app address with no `/**`; Redirect URLs = each address + `/**`; custom SMTP. Checking means signing in with an
   email that has never signed in before. **Email OTP Length = 6** (Sign In / Providers → Email; Supabase's
   default is now 8 and the screen has 6 boxes).
+- **Phase 1, part 1 (built 2026-11-26, Moiz approved the pictures, then "yes build it"; NOT pushed yet):** migration
+  `phase1_items_customers_levels_2026_11_26` on the test database (every company got L1–L3).
+  - **Price levels have private names** (Settings → Price levels, 1–6, default for new customers; a level with customers can't be
+    taken off). **Never shown at a glance on a customer's page** (wholesalers open it in front of customers): only "Price level ••• Show",
+    which shows it for 5 seconds. The Customers list has no level column, only a level filter.
+  - **Items:** list (search by name / UPC / item #, Needs you = no UPC / no cost / price missing / below cost, category), item panel on the
+    right: details, category (vapor asks ml, OTP / snuff / pouches / cigars ask ounces), "Counted in" = the smallest unit (stock is counted
+    in it), sizes (name, holds N units, UPC unique per company, cost, a price per level). Staff see no costs and can't change items.
+  - **Customers:** list → full customer page (Overview · Details · Licenses · Prices · Notes · History). Licenses: resale certificate,
+    state location number, tobacco, vapor, hemp, beer, with expiry and "copy on file". **Tobacco license ended or missing = tobacco
+    stopped** (Settings → License rules: stop or only warn; remind 0–90 days before). Customers who don't buy tobacco skip that check.
+    Owes / past due / buys a week show $0 until invoices (Phase 2) and payments (Phase 3).
+  - Not built yet in Phase 1: Bring in from your old system (import with a "balances match" check), uploading license copies.

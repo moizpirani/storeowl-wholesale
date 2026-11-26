@@ -14,6 +14,6 @@ if (!fake && (!url || !key)) {
   const db = fake
     ? makeFake({ signedIn: import.meta.env.VITE_FAKE_USER || null })
     : makeDb(createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true } }));
-  const A = startApp(document.getElementById('app'), db);
-  if (fake) window.__sow = { A, db };
+  const go = () => { const A = startApp(document.getElementById('app'), db); if (fake) window.__sow = { A, db }; };
+  if (fake && import.meta.env.VITE_FAKE_DEMO === '1') import('./demo.js').then((m) => m.seedDemo(db)).then(go); else go();
 }

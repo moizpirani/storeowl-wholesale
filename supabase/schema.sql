@@ -152,6 +152,7 @@ begin
   for s in select distinct _clean_state(x) from jsonb_array_elements_text(coalesce(p->'others','[]'::jsonb)) x loop
     if s is not null and s <> h then insert into company_states(company_id, state, is_home, added_by) values (cid, s, false, u); end if;
   end loop;
+  perform _levels_ensure(cid);
   perform _log(cid, 'company made', jsonb_build_object('name', trim(p->>'name'), 'home', h));
   return _company_json(cid);
 end $$;
@@ -270,6 +271,381 @@ begin
     '[]'::jsonb);
 end $$;
 
+
+-- ===== Phase 1: price levels, items, customers, licenses, notes (2026-11-26) =====
+
+alter table companies add column if not exists settings jsonb not null default '{}'::jsonb;
+
+-- Each company names its own price levels (private codes like "L1" or "Route 2", never shown to customers).
+create table if not exists price_levels (
+  company_id uuid not null references companies(id) on delete cascade,
+  n int not null check (n between 1 and 6),
+  name text not null check (length(trim(name)) between 1 and 20),
+  primary key (company_id, n)
+);
+
+create table if not exists items (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  name text not null check (length(trim(name)) between 1 and 160),
+  item_no text not null default '',
+  category text not null default 'other' check (category in ('cigarettes','cigars','otp','snuff','vapor','pouches','hemp','beer','other')),
+  nacs text not null default '',
+  vendor text not null default '',
+  unit text not null default 'each',        -- stock is counted in this (the smallest size): pack, can, each…
+  ml numeric(10,2),                          -- vapor liquid per unit (for per-ml taxes)
+  oz numeric(10,3),                          -- weight per unit (for per-ounce taxes)
+  age int not null default 0 check (age in (0,18,21)),
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists items_company on items(company_id, name);
+
+-- The sizes an item is sold in. n = how many units (the item's `unit`) are in this size.
+create table if not exists item_sizes (
+  id uuid primary key default gen_random_uuid(),
+  item_id uuid not null references items(id) on delete cascade,
+  company_id uuid not null references companies(id) on delete cascade,
+  pos int not null default 0,
+  name text not null check (length(trim(name)) between 1 and 40),
+  n int not null check (n >= 1),
+  upc text not null default '' check (upc ~ '^[0-9]*$'),
+  cost numeric(12,4),
+  prices jsonb not null default '{}'::jsonb      -- {"1": 34.20, "2": 33.90}  (price level n → price)
+);
+create index if not exists item_sizes_item on item_sizes(item_id, pos);
+create unique index if not exists item_sizes_upc on item_sizes(company_id, upc) where upc <> '';
+
+create table if not exists customers (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  name text not null check (length(trim(name)) between 1 and 160),
+  store_no text not null default '',
+  phone text not null default '',
+  email text not null default '',
+  addr text not null default '',
+  city text not null default '',
+  state text not null default '',
+  zip text not null default '',
+  contacts jsonb not null default '[]'::jsonb,   -- [{name, role, phone}]
+  level int not null default 1,
+  terms text not null default 'cod' check (terms in ('cod','advance','net7','net10','net14','net30')),
+  credit_limit numeric(12,2),
+  tobacco boolean not null default true,          -- buys tobacco (then a tobacco license is needed)
+  delivery text not null default '',
+  route text not null default '',
+  rep text not null default '',
+  ship_to text not null default '',
+  since date,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists customers_company on customers(company_id, name);
+
+create table if not exists customer_licenses (
+  customer_id uuid not null references customers(id) on delete cascade,
+  company_id uuid not null references companies(id) on delete cascade,
+  kind text not null check (kind in ('resale','location','tobacco','vapor','hemp','beer')),
+  number text not null default '',
+  expires date,
+  copy boolean not null default false,             -- a copy is on file
+  updated_at timestamptz not null default now(),
+  primary key (customer_id, kind)
+);
+
+create table if not exists customer_notes (
+  id bigint generated always as identity primary key,
+  customer_id uuid not null references customers(id) on delete cascade,
+  company_id uuid not null references companies(id) on delete cascade,
+  text text not null check (length(trim(text)) between 1 and 2000),
+  by_name text not null default '',
+  at timestamptz not null default now()
+);
+create index if not exists customer_notes_cust on customer_notes(customer_id, at desc);
+
+alter table price_levels enable row level security;
+alter table items enable row level security;
+alter table item_sizes enable row level security;
+alter table customers enable row level security;
+alter table customer_licenses enable row level security;
+alter table customer_notes enable row level security;
+revoke all on price_levels, items, item_sizes, customers, customer_licenses, customer_notes from anon, authenticated;
+
+create or replace function _num(v jsonb) returns numeric language sql immutable as $$
+  select case when v is null or jsonb_typeof(v) = 'null' or trim(v #>> '{}') = '' then null else (v #>> '{}')::numeric end $$;
+
+create or replace function _levels_ensure(p_company uuid) returns void
+language sql security definer set search_path = public as $$
+  insert into price_levels(company_id, n, name) select p_company, n, 'L' || n from generate_series(1,3) n
+  where not exists (select 1 from price_levels where company_id = p_company) $$;
+
+create or replace function _levels_json(p_company uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('n', n, 'name', name,
+    'customers', (select count(*) from customers c where c.company_id = p_company and c.level = l.n and c.active)) order by n), '[]'::jsonb)
+  from price_levels l where company_id = p_company $$;
+
+-- Company JSON now carries its settings and price levels.
+create or replace function _company_json(p_company uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', c.id, 'name', c.name, 'phone', c.phone, 'email', c.email, 'addr', c.addr, 'city', c.city,
+    'state', c.state, 'zip', c.zip, 'created_at', c.created_at, 'is_test', c.is_test,
+    'role', _role_in(c.id),
+    'home', (select state from company_states where company_id = c.id and is_home),
+    'others', coalesce((select jsonb_agg(state order by state) from company_states where company_id = c.id and not is_home), '[]'::jsonb),
+    'settings', jsonb_build_object('tobacco_stop', true, 'remind_days', 30, 'default_level', 1) || c.settings,
+    'levels', _levels_json(c.id))
+  from companies c where c.id = p_company $$;
+
+-- Owners and managers: the price levels. list = [{n?, name}]. A level with customers on it can't be taken away.
+create or replace function levels_set(p_company uuid, p_list jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x jsonb; i int := 0; keep int[] := '{}'; used int; before jsonb; nm text; nn int; free int;
+begin
+  perform _need(p_company, 'manager');
+  perform _levels_ensure(p_company);
+  if jsonb_array_length(coalesce(p_list,'[]'::jsonb)) = 0 then raise exception 'keep at least one price level'; end if;
+  if jsonb_array_length(p_list) > 6 then raise exception 'up to 6 price levels'; end if;
+  if (select count(distinct lower(trim(e->>'name'))) from jsonb_array_elements(p_list) e) <> jsonb_array_length(p_list) then
+    raise exception 'two price levels have the same name'; end if;
+  before := _levels_json(p_company);
+  for x in select * from jsonb_array_elements(p_list) loop
+    if (x->>'n') is not null then keep := keep || (x->>'n')::int; end if;
+  end loop;
+  select count(*) into used from customers where company_id = p_company and active and not (level = any(keep));
+  if used > 0 then raise exception '% customers are on a price level you took away. Move them to another level first', used; end if;
+  delete from price_levels where company_id = p_company and not (n = any(keep));
+  for x in select * from jsonb_array_elements(p_list) loop
+    nm := trim(coalesce(x->>'name',''));
+    if length(nm) = 0 then raise exception 'every price level needs a name'; end if;
+    if length(nm) > 20 then raise exception 'keep level names short (20 letters or less)'; end if;
+    nn := (x->>'n')::int;
+    if nn is null then
+      select min(g) into free from generate_series(1,6) g where not exists (select 1 from price_levels where company_id = p_company and n = g);
+      insert into price_levels(company_id, n, name) values (p_company, free, nm);
+    else
+      update price_levels set name = nm where company_id = p_company and n = nn;
+    end if;
+  end loop;
+  if not exists (select 1 from price_levels where company_id = p_company and n = coalesce((select (settings->>'default_level')::int from companies where id = p_company),1)) then
+    update companies set settings = settings || jsonb_build_object('default_level', (select min(n) from price_levels where company_id = p_company)) where id = p_company;
+  end if;
+  perform _log(p_company, 'price levels changed', jsonb_build_object('before', before, 'after', _levels_json(p_company)));
+  return _company_json(p_company);
+end $$;
+
+-- Owners and managers: tobacco_stop (bool), remind_days (0–120), default_level.
+create or replace function company_settings_set(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s jsonb := '{}'::jsonb; before jsonb;
+begin
+  perform _need(p_company, 'manager');
+  select settings into before from companies where id = p_company;
+  if p ? 'tobacco_stop' then s := s || jsonb_build_object('tobacco_stop', (p->>'tobacco_stop')::boolean); end if;
+  if p ? 'remind_days' then
+    if (p->>'remind_days')::int not between 0 and 120 then raise exception 'reminders can be 0 to 120 days ahead'; end if;
+    s := s || jsonb_build_object('remind_days', (p->>'remind_days')::int); end if;
+  if p ? 'default_level' then
+    if not exists (select 1 from price_levels where company_id = p_company and n = (p->>'default_level')::int) then raise exception 'pick a price level'; end if;
+    s := s || jsonb_build_object('default_level', (p->>'default_level')::int); end if;
+  update companies set settings = settings || s where id = p_company;
+  perform _log(p_company, 'settings changed', jsonb_build_object('before', before, 'after', s));
+  return _company_json(p_company);
+end $$;
+
+-- ----- items -----
+create or replace function _item_json(p_id uuid, p_cost boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', i.id, 'name', i.name, 'item_no', i.item_no, 'category', i.category, 'nacs', i.nacs,
+    'vendor', i.vendor, 'unit', i.unit, 'ml', i.ml, 'oz', i.oz, 'age', i.age, 'active', i.active, 'updated_at', i.updated_at,
+    'cost_hidden', not p_cost,
+    'sizes', coalesce((select jsonb_agg(jsonb_build_object('id', z.id, 'name', z.name, 'n', z.n, 'upc', z.upc,
+      'cost', case when p_cost then z.cost end, 'prices', z.prices) order by z.pos, z.n) from item_sizes z where z.item_id = i.id), '[]'::jsonb))
+  from items i where i.id = p_id $$;
+
+-- Everyone in the company sees items; only owners and managers see costs.
+create or replace function items_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r text := _need(p_company, 'staff'); c boolean := r in ('owner','manager');
+begin
+  return coalesce((select jsonb_agg(_item_json(id, c) order by lower(name)) from items where company_id = p_company), '[]'::jsonb);
+end $$;
+
+-- Owners and managers add or change an item. p = {id?, name, item_no, category, nacs, vendor, unit, ml, oz, age, active, sizes:[{id?, name, n, upc, cost, prices}]}
+create or replace function item_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare iid uuid; z jsonb; v_pos int := 0; keep uuid[] := '{}'; u text; other text; zid uuid; before jsonb; isnew boolean;
+begin
+  perform _need(p_company, 'manager');
+  if length(trim(coalesce(p->>'name',''))) = 0 then raise exception 'type the item name'; end if;
+  if jsonb_array_length(coalesce(p->'sizes','[]'::jsonb)) = 0 then raise exception 'add at least one size'; end if;
+  iid := nullif(p->>'id','')::uuid;
+  isnew := iid is null;
+  if not isnew then
+    if not exists (select 1 from items where id = iid and company_id = p_company) then raise exception 'item not found'; end if;
+    before := _item_json(iid, true);
+    update items set name = trim(p->>'name'), item_no = trim(coalesce(p->>'item_no','')), category = coalesce(nullif(p->>'category',''),'other'),
+      nacs = trim(coalesce(p->>'nacs','')), vendor = trim(coalesce(p->>'vendor','')), unit = coalesce(nullif(trim(p->>'unit'),''),'each'),
+      ml = _num(p->'ml'), oz = _num(p->'oz'), age = coalesce((p->>'age')::int, 0), active = coalesce((p->>'active')::boolean, true),
+      updated_at = now() where id = iid;
+  else
+    insert into items(company_id, name, item_no, category, nacs, vendor, unit, ml, oz, age)
+      values (p_company, trim(p->>'name'), trim(coalesce(p->>'item_no','')), coalesce(nullif(p->>'category',''),'other'), trim(coalesce(p->>'nacs','')),
+        trim(coalesce(p->>'vendor','')), coalesce(nullif(trim(p->>'unit'),''),'each'), _num(p->'ml'), _num(p->'oz'), coalesce((p->>'age')::int, 0))
+      returning id into iid;
+  end if;
+  for z in select * from jsonb_array_elements(p->'sizes') loop
+    if nullif(z->>'id','') is not null then keep := keep || (z->>'id')::uuid; end if;
+    u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+    if length(trim(coalesce(z->>'name',''))) = 0 then raise exception 'every size needs a name, like Carton or Box'; end if;
+    if coalesce((z->>'n')::int, 0) < 1 then raise exception 'how many in a %? Type a whole number, 1 or more', z->>'name'; end if;
+    if u <> '' and length(u) not between 6 and 14 then raise exception 'the UPC on % should be 6 to 14 digits', z->>'name'; end if;
+    if u <> '' then
+      select i.name into other from item_sizes s join items i on i.id = s.item_id
+        where s.company_id = p_company and s.upc = u and s.item_id <> iid limit 1;
+      if other is not null then raise exception 'UPC % is already on %', u, other; end if;
+    end if;
+  end loop;
+  if (select count(distinct regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g')) from jsonb_array_elements(p->'sizes') q where regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g') <> '')
+     <> (select count(*) from jsonb_array_elements(p->'sizes') q where regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g') <> '') then
+    raise exception 'two sizes have the same UPC'; end if;
+  delete from item_sizes where item_id = iid and not (id = any(keep));
+  update item_sizes set upc = '' where item_id = iid;          -- UPCs go back on below, so two sizes can swap them in one save
+  for z in select * from jsonb_array_elements(p->'sizes') loop
+    v_pos := v_pos + 1;
+    u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+    zid := nullif(z->>'id','')::uuid;
+    if zid is not null and exists (select 1 from item_sizes where id = zid and item_id = iid) then
+      update item_sizes set pos = v_pos, name = trim(z->>'name'), n = (z->>'n')::int, cost = _num(z->'cost'),
+        prices = coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null), '{}'::jsonb)
+        where id = zid;
+    else
+      insert into item_sizes(item_id, company_id, pos, name, n, upc, cost, prices)
+        values (iid, p_company, v_pos, trim(z->>'name'), (z->>'n')::int, '', _num(z->'cost'),
+          coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null), '{}'::jsonb))
+        returning id into zid;
+    end if;
+    update item_sizes set upc = u where id = zid;
+  end loop;
+  perform _log(p_company, case when isnew then 'item added' else 'item changed' end,
+    jsonb_build_object('item', iid, 'name', trim(p->>'name'), 'before', before));
+  return _item_json(iid, true);
+end $$;
+
+-- ----- customers -----
+create or replace function _cust_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(c) - 'company_id' || jsonb_build_object('owes', 0,
+    'licenses', coalesce((select jsonb_agg(jsonb_build_object('kind', l.kind, 'number', l.number, 'expires', l.expires, 'copy', l.copy) order by l.kind)
+      from customer_licenses l where l.customer_id = c.id), '[]'::jsonb))
+  from customers c where c.id = p_id $$;
+
+create or replace function customers_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return coalesce((select jsonb_agg(_cust_json(id) order by lower(name)) from customers where company_id = p_company), '[]'::jsonb);
+end $$;
+
+-- One customer with notes and their change history.
+create or replace function customer_get(p_company uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_id and company_id = p_company) then raise exception 'customer not found'; end if;
+  return _cust_json(p_id) || jsonb_build_object(
+    'notes', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'text', text, 'by', by_name, 'at', at) order by at desc)
+      from customer_notes where customer_id = p_id), '[]'::jsonb),
+    'history', coalesce((select jsonb_agg(jsonb_build_object('at', at, 'by', by_name, 'what', what, 'detail', detail) order by at desc, id desc)
+      from (select * from change_log where company_id = p_company and detail->>'customer' = p_id::text order by at desc, id desc limit 100) h), '[]'::jsonb));
+end $$;
+
+-- Owners and managers add or change a customer. Only the keys sent change.
+create or replace function customer_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare cid uuid := nullif(p->>'id','')::uuid; before jsonb; e text; lv int; isnew boolean := cid is null;
+begin
+  perform _need(p_company, 'manager');
+  perform _levels_ensure(p_company);
+  if (isnew or p ? 'name') and length(trim(coalesce(p->>'name',''))) = 0 then raise exception 'type the customer''s name'; end if;
+  e := lower(trim(coalesce(p->>'email','')));
+  if e <> '' and e !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'the email doesn''t look right'; end if;
+  if p ? 'level' then lv := (p->>'level')::int;
+    if not exists (select 1 from price_levels where company_id = p_company and n = lv) then raise exception 'pick a price level'; end if; end if;
+  if _num(p->'credit_limit') < 0 then raise exception 'the credit limit can''t be below zero'; end if;
+  if isnew then
+    insert into customers(company_id, name, level) values (p_company, trim(p->>'name'),
+      coalesce(lv, (select (settings->>'default_level')::int from companies where id = p_company), (select min(n) from price_levels where company_id = p_company)))
+      returning id into cid;
+  else
+    if not exists (select 1 from customers where id = cid and company_id = p_company) then raise exception 'customer not found'; end if;
+    before := _cust_json(cid) - 'licenses';
+  end if;
+  update customers set
+    name = case when p ? 'name' then trim(p->>'name') else name end,
+    store_no = case when p ? 'store_no' then trim(coalesce(p->>'store_no','')) else store_no end,
+    phone = case when p ? 'phone' then trim(coalesce(p->>'phone','')) else phone end,
+    email = case when p ? 'email' then e else email end,
+    addr = case when p ? 'addr' then trim(coalesce(p->>'addr','')) else addr end,
+    city = case when p ? 'city' then trim(coalesce(p->>'city','')) else city end,
+    state = case when p ? 'state' then coalesce(_clean_state(p->>'state'),'') else state end,
+    zip = case when p ? 'zip' then trim(coalesce(p->>'zip','')) else zip end,
+    contacts = case when p ? 'contacts' then coalesce((select jsonb_agg(jsonb_build_object('name', trim(coalesce(x->>'name','')), 'role', trim(coalesce(x->>'role','')), 'phone', trim(coalesce(x->>'phone',''))))
+      from jsonb_array_elements(p->'contacts') x where trim(coalesce(x->>'name','') || coalesce(x->>'phone','')) <> ''), '[]'::jsonb) else contacts end,
+    level = coalesce(lv, level),
+    terms = case when p ? 'terms' then p->>'terms' else terms end,
+    credit_limit = case when p ? 'credit_limit' then _num(p->'credit_limit') else credit_limit end,
+    tobacco = case when p ? 'tobacco' then (p->>'tobacco')::boolean else tobacco end,
+    delivery = case when p ? 'delivery' then trim(coalesce(p->>'delivery','')) else delivery end,
+    route = case when p ? 'route' then trim(coalesce(p->>'route','')) else route end,
+    rep = case when p ? 'rep' then trim(coalesce(p->>'rep','')) else rep end,
+    ship_to = case when p ? 'ship_to' then trim(coalesce(p->>'ship_to','')) else ship_to end,
+    since = case when p ? 'since' then nullif(p->>'since','')::date else since end,
+    active = case when p ? 'active' then (p->>'active')::boolean else active end,
+    updated_at = now()
+  where id = cid;
+  perform _log(p_company, case when isnew then 'customer added' else 'customer changed' end,
+    jsonb_build_object('customer', cid, 'name', (select name from customers where id = cid), 'before', before));
+  return customer_get(p_company, cid);
+end $$;
+
+-- Owners and managers set a license. An empty number removes it.
+create or replace function license_put(p_company uuid, p_customer uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare k text := p->>'kind'; before jsonb;
+begin
+  perform _need(p_company, 'manager');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  if k not in ('resale','location','tobacco','vapor','hemp','beer') then raise exception 'pick a license'; end if;
+  select to_jsonb(l) - 'customer_id' - 'company_id' into before from customer_licenses l where customer_id = p_customer and kind = k;
+  if length(trim(coalesce(p->>'number',''))) = 0 then
+    delete from customer_licenses where customer_id = p_customer and kind = k;
+  else
+    insert into customer_licenses(customer_id, company_id, kind, number, expires, copy)
+      values (p_customer, p_company, k, trim(p->>'number'), nullif(p->>'expires','')::date, coalesce((p->>'copy')::boolean, false))
+      on conflict (customer_id, kind) do update set number = excluded.number, expires = excluded.expires, copy = excluded.copy, updated_at = now();
+  end if;
+  perform _log(p_company, 'license changed', jsonb_build_object('customer', p_customer, 'kind', k, 'before', before,
+    'after', (select to_jsonb(l) - 'customer_id' - 'company_id' from customer_licenses l where customer_id = p_customer and kind = k)));
+  return customer_get(p_company, p_customer);
+end $$;
+
+-- Anyone in the company adds a note.
+create or replace function note_add(p_company uuid, p_customer uuid, p_text text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  if length(trim(coalesce(p_text,''))) = 0 then raise exception 'type a note'; end if;
+  insert into customer_notes(customer_id, company_id, text, by_name)
+    values (p_customer, p_company, left(trim(p_text), 2000),
+      coalesce((select nullif(name,'') from company_members where company_id = p_company and user_id = auth.uid()), _my_email()));
+  return customer_get(p_company, p_customer);
+end $$;
+
 -- Only signed-in people may call the app's functions; the helpers stay private.
 revoke execute on function _role_in(uuid), _need(uuid,text), _log(uuid,text,jsonb), _company_json(uuid) from public, anon, authenticated;
 revoke execute on function my_companies(), create_company(jsonb), company_put(uuid,jsonb), company_states_set(uuid,text,jsonb),
@@ -278,3 +654,9 @@ revoke execute on function my_companies(), create_company(jsonb), company_put(uu
 grant execute on function my_companies(), create_company(jsonb), company_put(uuid,jsonb), company_states_set(uuid,text,jsonb),
   members_list(uuid), invite_put(uuid,text,text), invite_remove(uuid,text), member_set(uuid,uuid,text),
   my_name_set(uuid,text), change_log_list(uuid,int) to authenticated;
+
+revoke execute on function _num(jsonb), _levels_ensure(uuid), _levels_json(uuid), _item_json(uuid,boolean), _cust_json(uuid) from public, anon, authenticated;
+revoke execute on function levels_set(uuid,jsonb), company_settings_set(uuid,jsonb), items_list(uuid), item_put(uuid,jsonb),
+  customers_list(uuid), customer_get(uuid,uuid), customer_put(uuid,jsonb), license_put(uuid,uuid,jsonb), note_add(uuid,uuid,text) from public, anon;
+grant execute on function levels_set(uuid,jsonb), company_settings_set(uuid,jsonb), items_list(uuid), item_put(uuid,jsonb),
+  customers_list(uuid), customer_get(uuid,uuid), customer_put(uuid,jsonb), license_put(uuid,uuid,jsonb), note_add(uuid,uuid,text) to authenticated;

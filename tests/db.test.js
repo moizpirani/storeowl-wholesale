@@ -89,3 +89,62 @@ test('signed-in people can only reach the app functions, never the tables', asyn
     has_function_privilege('authenticated', '_need(uuid,text)', 'execute') h`);
   assert.deepEqual(r.rows[0], { t: false, f: true, a: false, h: false });
 });
+
+test('Phase 1: price levels, items with sizes, customers, licenses, notes', async () => {
+  const db = await fresh();
+  await as(db, OWNER, 'owner@example.com');
+  const c = await one(db, "select create_company($1::jsonb)", [JSON.stringify({ name: 'Knox', home: 'TN' })]);
+  const cid = c.id;
+  assert.deepEqual(c.levels.map((l) => l.name), ['L1', 'L2', 'L3']);
+  assert.equal(c.settings.tobacco_stop, true); assert.equal(c.settings.remind_days, 30);
+
+  // Levels get private names; a new one takes the first free number.
+  const lv = await one(db, 'select levels_set($1, $2::jsonb)', [cid, JSON.stringify([{ n: 1, name: 'Route 1' }, { n: 2, name: 'Route 2' }, { name: 'Cash and carry' }])]);
+  assert.deepEqual(lv.levels.map((l) => [l.n, l.name]), [[1, 'Route 1'], [2, 'Route 2'], [3, 'Cash and carry']]);
+  await fails(db, 'select levels_set($1, $2::jsonb)', [cid, JSON.stringify([{ n: 1, name: 'A' }, { n: 2, name: 'a' }])], /same name/);
+
+  // Items: sizes, UPCs kept unique across the company, costs hidden from staff.
+  const it = await one(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Seneca Full Flavor Box', category: 'cigarettes', unit: 'pack', age: 21,
+    sizes: [{ name: 'Carton', n: 10, upc: '0 14700 31901 7', cost: '28.90', prices: { 1: '34.20', 2: 33.9, 3: '' } }, { name: 'Case', n: 500, upc: '10014700319014', cost: 1445 }] })]);
+  assert.equal(it.sizes.length, 2); assert.equal(it.sizes[0].upc, '014700319017'); assert.equal(Number(it.sizes[0].prices['1']), 34.2);
+  assert.equal(it.sizes[0].prices['3'], undefined);
+  await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Other', sizes: [{ name: 'Box', n: 1, upc: '014700319017' }] })], /already on Seneca/);
+  await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'X', sizes: [{ name: 'Box', n: 0 }] })], /whole number/);
+  await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'X', sizes: [] })], /at least one size/);
+  // Two sizes swap UPCs in one save.
+  const sw = await one(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify(Object.assign({}, it, {
+    sizes: [Object.assign({}, it.sizes[0], { upc: it.sizes[1].upc }), Object.assign({}, it.sizes[1], { upc: it.sizes[0].upc })] }))]);
+  assert.equal(sw.sizes[0].upc, '10014700319014'); assert.equal(sw.sizes[0].id, it.sizes[0].id);
+
+  // Customers get the default level, and the level can't be taken away while it's in use.
+  const cu = await one(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Maynardville Fuel Stop', terms: 'net14', credit_limit: '5000', level: 2,
+    contacts: [{ name: 'Raj', role: 'Owner', phone: '865' }, { name: '', phone: '' }] })]);
+  assert.equal(cu.level, 2); assert.equal(Number(cu.credit_limit), 5000); assert.equal(cu.contacts.length, 1);
+  await fails(db, 'select levels_set($1, $2::jsonb)', [cid, JSON.stringify([{ n: 1, name: 'Route 1' }])], /1 customers are on a price level/);
+  await fails(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Y', level: 6 })], /pick a price level/);
+  await fails(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Y', email: 'nope' })], /doesn't look right/);
+
+  const l1 = await one(db, 'select license_put($1, $2, $3::jsonb)', [cid, cu.id, JSON.stringify({ kind: 'tobacco', number: '46-331', expires: '2026-12-08', copy: true })]);
+  assert.equal(l1.licenses[0].kind, 'tobacco'); assert.equal(l1.licenses[0].expires, '2026-12-08');
+  const l2 = await one(db, 'select license_put($1, $2, $3::jsonb)', [cid, cu.id, JSON.stringify({ kind: 'tobacco', number: '' })]);
+  assert.equal(l2.licenses.length, 0);
+  const n1 = await one(db, 'select note_add($1, $2, $3)', [cid, cu.id, 'Pays by check on Fridays']);
+  assert.equal(n1.notes[0].text, 'Pays by check on Fridays');
+  assert.ok(n1.history.some((h) => h.what === 'license changed'));
+  assert.ok(n1.history.some((h) => h.what === 'customer added'));
+
+  // Staff see items without costs and can add notes, but can't change customers or items.
+  await one(db, 'select invite_put($1, $2, $3)', [cid, 'staff@example.com', 'staff']);
+  await as(db, MGR, 'staff@example.com');
+  await one(db, 'select my_companies()');
+  const list = await one(db, 'select items_list($1)', [cid]);
+  assert.equal(list[0].sizes[0].cost, null); assert.equal(list[0].cost_hidden, true);
+  await one(db, 'select note_add($1, $2, $3)', [cid, cu.id, 'Called']);
+  await fails(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ id: cu.id, name: 'Mine' })], /manager or owner/);
+  await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Mine', sizes: [{ name: 'Box', n: 1 }] })], /manager or owner/);
+
+  // Someone outside sees nothing.
+  await as(db, OUT, 'out@example.com');
+  await fails(db, 'select customers_list($1)', [cid], /no access/);
+  await fails(db, 'select customer_get($1, $2)', [cid, cu.id], /no access/);
+});
