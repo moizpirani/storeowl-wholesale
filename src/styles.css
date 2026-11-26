@@ -342,3 +342,16 @@ h2.mt{margin-top:18px}
 .lcedit{display:grid;grid-template-columns:1fr 150px auto;gap:10px;align-items:end;margin:4px 0 8px}
 .lcedit .fld{margin:0}
 .lcedit .bx{width:100%}
+
+/* License bar on a customer (a needed license missing or ended; selling is never stopped) */
+.licbar{display:flex;align-items:center;gap:12px;background:#FEF3E2;border:1px solid #F5C77E;border-radius:10px;padding:11px 14px;margin:0 0 14px;font-size:14px}
+.licbar .tx{flex:1}.licbar .tx b{color:#7A3A06}
+.licbar a.btn{display:inline-flex;align-items:center;text-decoration:none}
+.lcadd.big{min-height:38px;padding:0 16px;font-size:14px}
+/* Settings → License rules: licenses needed per state */
+.lrst{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 12px}
+.lrsth{display:flex;justify-content:space-between;align-items:center;margin:0 0 4px}
+.lrks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
+.lrk{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}
+.lrk input{margin-top:3px}.lrk b{display:block;font-size:14px}.lrk small{display:block;font-size:12px;color:var(--muted)}
+@media (max-width:700px){.lrks{grid-template-columns:1fr}.licbar{flex-wrap:wrap}}

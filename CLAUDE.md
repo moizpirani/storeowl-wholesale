@@ -2,7 +2,8 @@
 
 Invoicing and back office for wholesalers that sell to gas stations and convenience stores. A separate app from
 StoreOwl Back Office (repo `moizpirani/shift-close-app`), with the same look. Build plan = claude.ai Project
-"StoreOwl Wholesale Invoicing", doc `claude/build-plan-phases.md` (Release 1 = Phases 0–7 + a basic QuickBooks export).
+"StoreOwl Wholesale Invoicing", doc `claude/build-plan-phases.md` (re-ordered 2026-11-26: Release 1 = Phases 0–9 — 2 Counter, 3 Payments, 4 Inventory & Receiving,
+5 Store ordering app, 6 State Rules, 7 Monthly reports incl. MSA, 8 Send to store, 9 QuickBooks export).
 
 ## Working with Moiz (same rules as StoreOwl)
 - He isn't technical: plain words, ideas with a clear Yes/No recommendation. Show pictures before building or releasing.
@@ -21,7 +22,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
 (names never change once given); `tests/ui.test.js` fails without them.
 
 ## Code
-- Vite single-page app: `src/app.js` (sign in, setup, menu, Home, Settings), `src/catalog.js` (Items, Customers, Settings → Price levels · License rules), `src/rules.js` (pure rules: license states, tobacco stop, item / customer checks), `src/demo.js` (made-up data for pictures only), `src/db.js` (the only door to the database + a pretend backend
+- Vite single-page app: `src/app.js` (sign in, setup, menu, Home, Settings), `src/catalog.js` (Items, Customers, Settings → Price levels · License rules), `src/rules.js` (pure rules: license states, licenses needed per state, item / customer checks), `src/demo.js` (made-up data for pictures only), `src/db.js` (the only door to the database + a pretend backend
   `makeFake` for tests and pictures), `src/states.js`, `src/owl.js` (copied from StoreOwl), `src/styles.css`.
 - Database: Supabase project **`twedblbvzdmlhtmnysgo` "StoreOwl Wholesale (Test)"** (us-east-1). `supabase/schema.sql`
   is the whole database, safe to re-run. Tables are locked; everything goes through security-definer functions
@@ -57,7 +58,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
     in it), sizes (name, holds N units, UPC unique per company, cost, a price per level). Staff see no costs and can't change items.
   - **Customers:** list → full customer page (Overview · Details · Licenses · Prices · Notes · History). Licenses: resale certificate,
     state location number, tobacco, vapor, hemp, beer, with expiry and "copy on file". **Tobacco license ended or missing = tobacco
-    stopped** (Settings → License rules: stop or only warn; remind 0–90 days before). Customers who don't buy tobacco skip that check.
+    stopped** — REPLACED 2026-11-26 by part 4 below (nothing ever stops a sale now).
     Owes / past due / buys a week show $0 until invoices (Phase 2) and payments (Phase 3).
 - **Phase 1, part 2 = Bring in from your old system (built 2026-11-26, Moiz said "Yes"; database migration
   `phase1_import_and_starting_balances_2026_11_26` on the test database; ON TEST since 2026-11-26, branch `test`; not on `main` live):**
@@ -80,3 +81,17 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   `copy_path_ok(name, min)`; the app shows each with a signed link good for an hour (`withUrls` in src/db.js). Table `license_copies`
   (never deleted, `removed_at`), `copy_add` (path must be under that company / customer, photo or PDF only), `copy_remove`,
   `customer_get` returns `copies`. The simpler import (no Match columns page) is on branch `import-simple`, not on test (Moiz: leave it).
+- **Phase 1, part 4 = licenses the wholesaler picks per state; warnings only (built 2026-11-26, Moiz: "Let the wholesaler decide which
+  licenses he needs ... complete authority ... make this change and build it"; migration `phase1_license_rules_per_state_2026_11_26`
+  on the test database; ON TEST since 2026-11-26):** Settings → License rules = **Licenses you need to sell**, one box per state the
+  company sells in, 6 checkboxes (resale, location number, tobacco, vapor, hemp, beer; each says what it covers: every sale / the item
+  categories in `LIC_COVERS`), "Use the suggested list"; **When a needed license is missing or ended** = Only warn me (default) · Ask for a
+  manager's OK; Remind me. Suggested lists (`suggestedLic` in src/rules.js): **TN = resale + location + hemp** (Tennessee doesn't license
+  stores to sell tobacco or vapor, 2026; hemp stores need a TABC retail license); every other state = resale + tobacco until researched.
+  Settings: `lic_mode` ('warn' | 'ask'), `lic_need` ({state: [kinds]}); `tobacco_stop` is gone. A customer falls under their store's state,
+  else the home state; tobacco / vapor only if they buy tobacco; missing hemp / beer licenses only warn at sale (`saleWarnings`), not on the page.
+  **Nothing stops a sale** (Moiz: the wholesaler always has the final say; the app never blocks an order). Customer page: orange bar
+  `#cu-licbar` (what's missing or ended, "You can still sell to them", **Email the store** = mailto with the request, **Upload now** = add a copy,
+  then the Licenses tab opens with the copy panel); Licenses tab lists needed ones first with what they cover, others say "Not needed";
+  Prices tab says "<license> ended … · you'll be warned". All license issues are orange. Still to come: the Counter's "Sell anyway" box with a
+  reason, written to History (Phase 2), license reminder emails to stores (needs a sender), volume price breaks, item photos.

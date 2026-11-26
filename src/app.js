@@ -31,7 +31,7 @@ export const MENU = [
   { k: 'customers', n: 'Customers' },
   { k: 'items', n: 'Items' },
   { k: 'payments', n: 'Payments', phase: 3 },
-  { k: 'compliance', n: 'Compliance', phase: 5 },
+  { k: 'compliance', n: 'Compliance', phase: 7 },
   { k: 'reports', n: 'Reports', phase: 3 },
   { k: 'settings', n: 'Settings' }
 ];
@@ -285,7 +285,7 @@ export function startApp(root, db) {
     const invited = A.people && (A.people.members.length > 1 || A.people.invites.length > 0);
     const items = (A.items || []).filter((x) => x.active !== false), custs = (A.custs || []).filter((x) => x.active !== false);
     const st = settingsOf(c), t = todayIso();
-    const cNeed = custs.filter((x) => custIssues(x, st, t).length).length, iNeed = items.filter((x) => itemIssues(x, c.levels).length).length;
+    const cNeed = custs.filter((x) => custIssues(x, st, t, c.home).length).length, iNeed = items.filter((x) => itemIssues(x, c.levels).length).length;
     const n = (v) => (A.items ? v.toLocaleString() : '…');
     return '<h1>' + greet() + (name ? ', ' + esc(name) : '') + '</h1>' +
       '<div class="bxs">' + box('Sales today', '$0.00', 'No invoices yet') + box('Customers', n(custs.length), cNeed ? '<span class="miss">' + cNeed + ' need you</span>' : '') +

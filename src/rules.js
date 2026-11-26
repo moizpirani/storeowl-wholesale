@@ -4,8 +4,6 @@ export const CATEGORIES = [
   ['cigarettes', 'Cigarettes'], ['cigars', 'Cigars'], ['otp', 'Other tobacco'], ['snuff', 'Moist snuff'],
   ['vapor', 'Vapor'], ['pouches', 'Nicotine pouches'], ['hemp', 'Hemp / cannabinoid'], ['beer', 'Beer'], ['other', 'Grocery and other']
 ];
-// Categories that need the customer's tobacco license.
-export const TOBACCO = ['cigarettes', 'cigars', 'otp', 'snuff', 'vapor', 'pouches'];
 export const catName = (k) => (CATEGORIES.find((c) => c[0] === k) || [k, 'Grocery and other'])[1];
 export const SIZE_NAMES = ['Pack', 'Carton', 'Case', 'Box', 'Can', 'Roll', 'Each', 'Bottle', 'Bag', 'Tin', 'Sleeve', 'Pouch', 'Display'];
 
@@ -17,8 +15,26 @@ export const LICENSES = [
   ['vapor', 'Vapor license'], ['hemp', 'Hemp license'], ['beer', 'Beer permit']
 ];
 export const licName = (k) => (LICENSES.find((l) => l[0] === k) || [k, k])[1];
+export const LIC_KINDS = LICENSES.map((l) => l[0]);
 
-export const DEFAULT_SETTINGS = { tobacco_stop: true, remind_days: 30, default_level: 1 };
+// What each license covers. 'all' = every sale (the state needs it on file for the store).
+export const LIC_COVERS = {
+  resale: 'all', location: 'all', tobacco: ['cigarettes', 'cigars', 'otp', 'snuff', 'pouches'],
+  vapor: ['vapor'], hemp: ['hemp'], beer: ['beer']
+};
+export const LIC_COVER_TEXT = {
+  resale: 'Every sale', location: 'Every sale', tobacco: 'Cigarettes, cigars, other tobacco, snuff, pouches',
+  vapor: 'Vapor', hemp: 'Hemp / cannabinoid', beer: 'Beer'
+};
+// The wholesaler decides which licenses they need in each state. These are only the starting suggestion.
+// Tennessee (2026): stores need no state license to sell tobacco or vapor; hemp stores need a state retail license.
+const SUGGEST = { TN: ['resale', 'location', 'hemp'] };
+export const SUGGEST_NOTE = { TN: 'Tennessee doesn’t license stores to sell tobacco or vapor. Hemp stores need a state license.' };
+export function suggestedLic(state) { return (SUGGEST[state] || ['resale', 'tobacco']).slice(); }
+// Licenses that only matter when that item is on the invoice: missing ones aren't flagged on the customer page.
+const AT_SALE_ONLY = ['hemp', 'beer'];
+
+export const DEFAULT_SETTINGS = { lic_mode: 'warn', lic_need: {}, remind_days: 30, default_level: 1 };
 export function settingsOf(company) { return Object.assign({}, DEFAULT_SETTINGS, (company && company.settings) || {}); }
 
 export function cleanUpc(s) { return String(s || '').replace(/\D/g, ''); }
@@ -55,36 +71,58 @@ export function licState(lic, today, remind) {
   return d <= remind ? 'soon' : 'ok';
 }
 
-// May this customer be sold tobacco today?
-export function canTobacco(c, settings, today) {
-  const s = Object.assign({}, DEFAULT_SETTINGS, settings || {});
-  if (!c.tobacco) return false;
-  if (!s.tobacco_stop) return true;
-  const lic = (c.licenses || []).find((l) => l.kind === 'tobacco');
-  const st = licState(lic, today, s.remind_days);
-  return st === 'ok' || st === 'soon';
+// The licenses the wholesaler needs in a state (their own pick, or the suggestion until they pick).
+export function licNeeded(settings, state) {
+  const n = ((settings || {}).lic_need || {})[state];
+  return Array.isArray(n) ? n.filter((k) => LIC_KINDS.includes(k)) : suggestedLic(state);
 }
-
-// What needs the wholesaler's attention on a customer. tone: red = stops a sale, or = needs a look soon.
-export function custIssues(c, settings, today) {
+// Which state's rules a customer falls under: their store's state, else the wholesaler's home state.
+export const custStateOf = (c, home) => (c && c.state) || home || '';
+// The licenses this customer needs. Tobacco and vapor only for customers who buy tobacco.
+export function custNeeds(c, settings, home) {
+  return licNeeded(settings, custStateOf(c, home)).filter((k) => !(['tobacco', 'vapor'].includes(k) && c.tobacco === false));
+}
+// Needed licenses that are missing or ended. Nothing here stops a sale: the wholesaler is warned and decides.
+export function licProblems(c, settings, today, home, all) {
   const s = Object.assign({}, DEFAULT_SETTINGS, settings || {});
   const out = [];
-  const lic = (k) => (c.licenses || []).find((l) => l.kind === k);
-  if (licState(lic('resale'), today, s.remind_days) === 'none') out.push({ k: 'resale', tone: 'red', t: 'No resale number' });
-  if (c.tobacco) {
-    const t = lic('tobacco'), st = licState(t, today, s.remind_days);
-    const stop = s.tobacco_stop ? ' · tobacco stopped' : '';
-    if (st === 'none') out.push({ k: 'tobacco', tone: 'red', t: 'No tobacco license' + stop });
-    if (st === 'ended') out.push({ k: 'tobacco', tone: 'red', t: 'Tobacco license ended ' + shortDate(t.expires) + stop });
-    if (st === 'soon') out.push({ k: 'tobacco', tone: 'or', t: 'Tobacco license ends ' + shortDate(t.expires) });
-  }
-  (c.licenses || []).filter((l) => !['resale', 'tobacco'].includes(l.kind)).forEach((l) => {
+  custNeeds(c, s, home).forEach((k) => {
+    const l = (c.licenses || []).find((x) => x.kind === k), st = licState(l, today, s.remind_days);
+    if (st === 'ended') out.push({ kind: k, st, expires: l.expires });
+    if (st === 'none' && (all || !AT_SALE_ONLY.includes(k))) out.push({ kind: k, st });
+  });
+  return out;
+}
+export function problemText(p, year) {
+  if (p.st === 'ended') return licName(p.kind) + ' ended ' + shortDate(p.expires, year);
+  return p.kind === 'resale' ? 'No resale number' : p.kind === 'location' ? 'No location number' : 'No ' + licName(p.kind).toLowerCase();
+}
+// The license problems that matter when selling an item of this category (the Counter warns with these).
+export function saleWarnings(c, category, settings, today, home) {
+  return licProblems(c, settings, today, home, true).filter((p) => { const cv = LIC_COVERS[p.kind]; return cv === 'all' || cv.includes(category); });
+}
+
+// What needs the wholesaler's attention on a customer. tone: or = needs a look (nothing stops a sale).
+export function custIssues(c, settings, today, home) {
+  const s = Object.assign({}, DEFAULT_SETTINGS, settings || {});
+  const out = licProblems(c, s, today, home).map((p) => ({ k: p.kind, tone: 'or', t: problemText(p) }));
+  (c.licenses || []).forEach((l) => {
+    if (out.some((x) => x.k === l.kind)) return;
     const st = licState(l, today, s.remind_days);
-    if (st === 'ended') out.push({ k: l.kind, tone: 'red', t: licName(l.kind) + ' ended ' + shortDate(l.expires) });
+    if (st === 'ended') out.push({ k: l.kind, tone: 'or', t: licName(l.kind) + ' ended ' + shortDate(l.expires) });
     if (st === 'soon') out.push({ k: l.kind, tone: 'or', t: licName(l.kind) + ' ends ' + shortDate(l.expires) });
   });
-  if (c.credit_limit != null && (c.owes || 0) > c.credit_limit) out.push({ k: 'credit', tone: 'red', t: 'Over credit limit' });
+  if (c.credit_limit != null && (c.owes || 0) > c.credit_limit) out.push({ k: 'credit', tone: 'or', t: 'Over credit limit' });
   return out;
+}
+
+// Check the license list a wholesaler picked before it's saved.
+export function licNeedCheck(need, states) {
+  for (const st of Object.keys(need || {})) {
+    if (!(states || []).includes(st)) return 'You don’t sell in ' + st + '.';
+    if (!Array.isArray(need[st]) || need[st].some((k) => !LIC_KINDS.includes(k))) return 'Pick licenses from the list.';
+  }
+  return '';
 }
 
 // What needs a look on an item.

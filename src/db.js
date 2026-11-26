@@ -224,6 +224,14 @@ export function makeFake(opts) {
       const c = S.companies.find((x) => x.id === cid);
       if ('remind_days' in p && !(p.remind_days >= 0 && p.remind_days <= 120)) throw new Error('Reminders can be 0 to 120 days ahead');
       if ('default_level' in p && !c.levels.some((l) => l.n === +p.default_level)) throw new Error('Pick a price level');
+      if ('lic_mode' in p && !['warn', 'ask'].includes(p.lic_mode)) throw new Error('Pick only warn or ask for a manager’s OK');
+      if ('lic_need' in p) {
+        const states = [c.home].concat(c.others || []);
+        for (const st of Object.keys(p.lic_need || {})) {
+          if (!states.includes(st)) throw new Error('You don’t sell in ' + st);
+          if (!Array.isArray(p.lic_need[st]) || p.lic_need[st].some((k) => !['resale', 'location', 'tobacco', 'vapor', 'hemp', 'beer'].includes(k))) throw new Error('Pick licenses from the list');
+        }
+      }
       c.settings = Object.assign({}, c.settings, p);
       log(cid, 'settings changed', { after: p });
       return cj(c);

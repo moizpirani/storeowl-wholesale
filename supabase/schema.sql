@@ -396,7 +396,7 @@ language sql stable security definer set search_path = public as $$
     'role', _role_in(c.id),
     'home', (select state from company_states where company_id = c.id and is_home),
     'others', coalesce((select jsonb_agg(state order by state) from company_states where company_id = c.id and not is_home), '[]'::jsonb),
-    'settings', jsonb_build_object('tobacco_stop', true, 'remind_days', 30, 'default_level', 1) || c.settings,
+    'settings', jsonb_build_object('lic_mode', 'warn', 'lic_need', '{}'::jsonb, 'remind_days', 30, 'default_level', 1) || (c.settings - 'tobacco_stop'),
     'levels', _levels_json(c.id))
   from companies c where c.id = p_company $$;
 
@@ -437,14 +437,26 @@ begin
   return _company_json(p_company);
 end $$;
 
--- Owners and managers: tobacco_stop (bool), remind_days (0–120), default_level.
+-- Owners and managers: lic_mode ('warn' | 'ask': selling is never stopped), lic_need ({state: [licenses]} for the
+-- company's own states), remind_days (0–120), default_level. The old tobacco_stop setting is gone (2026-11-26).
+update companies set settings = settings - 'tobacco_stop' where settings ? 'tobacco_stop';
 create or replace function company_settings_set(p_company uuid, p jsonb) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare s jsonb := '{}'::jsonb; before jsonb;
+declare s jsonb := '{}'::jsonb; before jsonb; st text; ks jsonb;
 begin
   perform _need(p_company, 'manager');
   select settings into before from companies where id = p_company;
-  if p ? 'tobacco_stop' then s := s || jsonb_build_object('tobacco_stop', (p->>'tobacco_stop')::boolean); end if;
+  if p ? 'lic_mode' then
+    if p->>'lic_mode' not in ('warn','ask') then raise exception 'pick only warn or ask for a manager''s OK'; end if;
+    s := s || jsonb_build_object('lic_mode', p->>'lic_mode'); end if;
+  if p ? 'lic_need' then
+    if jsonb_typeof(p->'lic_need') <> 'object' then raise exception 'pick licenses for each state'; end if;
+    for st, ks in select * from jsonb_each(p->'lic_need') loop
+      if not exists (select 1 from company_states where company_id = p_company and state = st) then raise exception 'you don''t sell in %', st; end if;
+      if jsonb_typeof(ks) <> 'array' or exists (select 1 from jsonb_array_elements_text(ks) k where k not in ('resale','location','tobacco','vapor','hemp','beer'))
+        then raise exception 'pick licenses from the list'; end if;
+    end loop;
+    s := s || jsonb_build_object('lic_need', p->'lic_need'); end if;
   if p ? 'remind_days' then
     if (p->>'remind_days')::int not between 0 and 120 then raise exception 'reminders can be 0 to 120 days ahead'; end if;
     s := s || jsonb_build_object('remind_days', (p->>'remind_days')::int); end if;

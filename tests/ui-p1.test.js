@@ -42,10 +42,20 @@ test('price levels, items and customers', async () => {
   $('#lv-save').click(); await tick();
   assert.deepEqual(db.S.companies[0].levels.map((l) => l.name), ['Route 1', 'Route 2', 'Cash']);
 
-  // Settings → License rules.
+  // Settings → License rules: Tennessee starts with resale, location number and hemp (no tobacco license there);
+  // the wholesaler can pick any. Only warning is the default; selling is never stopped.
   $('[data-stab="licenses"]').click(); await tick(); checkTags('settings license rules');
+  assert.match($('#app').textContent, /Tennessee doesn’t license stores to sell tobacco/);
+  assert.ok($('[data-lrk="TN|resale"]').checked && $('[data-lrk="TN|hemp"]').checked && !$('[data-lrk="TN|tobacco"]').checked);
+  assert.ok($('#lr-warn').classList.contains('on'));
+  const tobBox = $('[data-lrk="TN|tobacco"]'); tobBox.checked = true; tobBox.dispatchEvent(new dom.window.Event('change'));
+  assert.equal($('[data-lrk="TN|tobacco"]'), tobBox, 'ticking never redraws');
+  assert.ok(!$('#lr-bar').classList.contains('hide'));
   pick('#lr-days', '60'); $('#lr-save').click(); await tick();
   assert.equal(db.S.companies[0].settings.remind_days, 60);
+  assert.deepEqual(db.S.companies[0].settings.lic_need, { TN: ['resale', 'location', 'tobacco', 'hemp'] });
+  assert.equal(db.S.companies[0].settings.lic_mode, 'warn');
+  assert.ok($('[data-lrsug="TN"]'), 'can go back to the suggested list');
 
   // Items: add one with two sizes; the margin updates while typing.
   $('[data-go="items"]').click(); await tick();
@@ -95,17 +105,20 @@ test('price levels, items and customers', async () => {
 
   // Licenses: add resale + a tobacco license that ends soon.
   $('[data-cutab="licenses"]').click(); await tick(); checkTags('customer licenses');
-  const rows = $$('[data-lk$="|number"]');
-  type(rows[0], '0108841203');
-  type(rows[2], '46-3310389'); type('[data-lk="2|expires"]', '2026-12-08');
+  type('[data-lk="0|number"]', '0108841203'); type('[data-lk="1|number"]', '0108841203-001');
+  type('[data-lk="2|number"]', '46-3310389'); type('[data-lk="2|expires"]', '2026-12-08');
   $('#cl-save').click(); await tick();
-  assert.equal(db.S.customers[0].licenses.length, 2);
+  assert.equal(db.S.customers[0].licenses.length, 3);
+  assert.equal($('#cu-licbar'), null, 'nothing missing, no bar');
   assert.match($('.chd').textContent, /Tobacco license ends Dec 8/);
 
-  // An ended tobacco license stops tobacco.
+  // An ended tobacco license warns (orange bar with Upload now); it never stops a sale.
   type($$('[data-lk="2|expires"]')[0], '2026-11-01');
   $('#cl-save').click(); await tick();
-  assert.match($('.chd').textContent, /Tobacco license ended Nov 1 · tobacco stopped/);
+  assert.match($('.chd').textContent, /Tobacco license ended Nov 1/);
+  assert.match($('#cu-licbar').textContent, /Tobacco license ended Nov 1, 2026\..*You can still sell/);
+  assert.ok($('#cu-licbar [data-lcadd="tobacco"]'), 'Upload now on the bar');
+  checkTags('customer license bar');
 
   // A copy of the tobacco license (a PDF): it shows in the row, opens on the side, and a new copy keeps the old one.
   const addCopy = async (name) => {
@@ -123,7 +136,7 @@ test('price levels, items and customers', async () => {
   assert.equal(db.S.copies.length, 2);
   assert.match($('#lc-pan').textContent, /Copies on file · 2/);
   $('#lc-save').click(); await tick(3);
-  assert.doesNotMatch($('.chd').textContent, /tobacco stopped/);
+  assert.equal($('#cu-licbar'), null, 'the new end date clears the bar');
   $('#lc-rm1').click(); await tick(); $('#lc-rm').click(); await tick(3);
   assert.equal(db.S.copies.filter((x) => !x.removed_at).length, 1);
   $('#lc-x').click(); await tick();
@@ -131,7 +144,8 @@ test('price levels, items and customers', async () => {
   type($$('[data-lk="2|expires"]')[0], '2026-11-01'); $('#cl-save').click(); await tick(3);   // back to ended for the checks below
   $('[data-cutab="prices"]').click(); await tick(); checkTags('customer prices');
   assert.match($('#cp-rows').textContent, /\$33\.90/);
-  assert.match($('#cp-rows').textContent, /Can’t sell · tobacco stopped/);
+  assert.match($('#cp-rows').textContent, /Tobacco license ended Nov 1 · you’ll be warned/);
+  assert.doesNotMatch($('#cp-rows').textContent, /Can’t sell/);
 
   // Notes and history.
   $('[data-cutab="notes"]').click(); await tick(); checkTags('customer notes');

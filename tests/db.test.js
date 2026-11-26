@@ -96,7 +96,13 @@ test('Phase 1: price levels, items with sizes, customers, licenses, notes', asyn
   const c = await one(db, "select create_company($1::jsonb)", [JSON.stringify({ name: 'Knox', home: 'TN' })]);
   const cid = c.id;
   assert.deepEqual(c.levels.map((l) => l.name), ['L1', 'L2', 'L3']);
-  assert.equal(c.settings.tobacco_stop, true); assert.equal(c.settings.remind_days, 30);
+  assert.equal(c.settings.lic_mode, 'warn'); assert.equal(c.settings.remind_days, 30); assert.equal('tobacco_stop' in c.settings, false);
+  // The wholesaler picks the licenses they need, only for their own states; selling is never stopped (warn or ask).
+  const ls = await one(db, 'select company_settings_set($1, $2::jsonb)', [cid, JSON.stringify({ lic_mode: 'ask', lic_need: { TN: ['resale', 'location', 'hemp'] } })]);
+  assert.equal(ls.settings.lic_mode, 'ask'); assert.deepEqual(ls.settings.lic_need, { TN: ['resale', 'location', 'hemp'] });
+  await fails(db, 'select company_settings_set($1, $2::jsonb)', [cid, JSON.stringify({ lic_mode: 'stop' })], /only warn/);
+  await fails(db, 'select company_settings_set($1, $2::jsonb)', [cid, JSON.stringify({ lic_need: { KY: ['resale'] } })], /don't sell in KY/);
+  await fails(db, 'select company_settings_set($1, $2::jsonb)', [cid, JSON.stringify({ lic_need: { TN: ['passport'] } })], /from the list/);
 
   // Levels get private names; a new one takes the first free number.
   const lv = await one(db, 'select levels_set($1, $2::jsonb)', [cid, JSON.stringify([{ n: 1, name: 'Route 1' }, { n: 2, name: 'Route 2' }, { name: 'Cash and carry' }])]);
