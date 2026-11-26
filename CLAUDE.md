@@ -39,5 +39,10 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   team moiz-pirani), linked to this repo; env `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (publishable key) = the
   test database on Production + Preview; Vercel sign-in off. Branch `test` → domain test-wholesale.storeowl.app (needs
   Cloudflare DNS `CNAME test-wholesale → cname.vercel-dns.com`, DNS only, added by Moiz) and
-  storeowl-wholesale-git-test-moiz-pirani.vercel.app. Supabase Auth: Magic Link template shows `{{ .Token }}`, custom
-  SMTP set by Moiz. Not done: wholesale.storeowl.app for `main`, Supabase Site URL.
+  storeowl-wholesale-git-test-moiz-pirani.vercel.app. Custom SMTP set by Moiz. Site URL = the git-test vercel.app
+  link; Redirect URLs = it and test-wholesale.storeowl.app, each with `/**`. Not done: wholesale.storeowl.app for `main`.
+- **Supabase Auth checklist for EVERY new Wholesale database (2026-11-26, Moiz: "let's not make the same mistakes"):**
+  BOTH email templates **Confirm signup** (first sign-in of a new email) AND **Magic Link** must show `{{ .Token }}`
+  (the screen asks for a 6-digit code; Confirm signup was missed first, so a new email got a link); Site URL = the
+  app address with no `/**`; Redirect URLs = each address + `/**`; custom SMTP. Checking means signing in with an
+  email that has never signed in before.
