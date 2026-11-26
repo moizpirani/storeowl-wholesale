@@ -374,3 +374,8 @@ h2.mt{margin-top:18px}
 .phdrop input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
 .phlist{max-height:50vh;overflow:auto}
 .phsum{margin-right:auto}
+
+/* Quantity breaks */
+.sz.brk{width:100%}.brk .bx{width:100%}.brk select.bx{min-width:90px}
+.grp{margin:12px 0 0;max-width:420px}.grp .f{margin:0}.grp #bk-hint{margin-top:6px}
+.brsub{display:block;font-size:12px;color:var(--teal);font-weight:600;margin-top:2px}

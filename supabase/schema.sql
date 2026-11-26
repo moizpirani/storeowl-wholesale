@@ -1000,3 +1000,101 @@ do $$ begin
       with check (bucket_id = 'item-photos' and public.copy_path_ok(name, 'manager'))$p$;
   end if;
 end $$;
+
+
+-- =====================================================================
+-- Quantity breaks (2026-11-26). Per size: [{min, off}] = buys at least `min` of this size → `off` dollars off each, at every
+-- price level. Items with the same break_group count together (5 cartons of any Seneca). Applied on invoices from Phase 2.
+-- =====================================================================
+alter table item_sizes add column if not exists breaks jsonb not null default '[]'::jsonb;
+alter table items add column if not exists break_group text not null default '';
+
+-- Checks and tidies one size's breaks: whole numbers 2 or more, an amount off above 0, no quantity twice, sorted.
+create or replace function _breaks_clean(p jsonb, p_size text) returns jsonb
+language plpgsql immutable set search_path = public as $$
+declare b jsonb; out jsonb := '[]'::jsonb; m int; o numeric; seen int[] := '{}'; last numeric := 0;
+begin
+  if p is null or jsonb_typeof(p) <> 'array' then return '[]'::jsonb; end if;
+  if jsonb_array_length(p) > 10 then raise exception 'up to 10 breaks on a %', p_size; end if;
+  for b in select value from jsonb_array_elements(p) order by (value->>'min')::numeric loop
+    begin m := (b->>'min')::int; exception when others then m := null; end;
+    if m is null or m < 2 or (b->>'min')::numeric <> m then raise exception 'a break on % needs a whole number of 2 or more', p_size; end if;
+    o := _num(b->'off');
+    if o is null or o <= 0 then raise exception 'a break on % needs an amount off', p_size; end if;
+    if m = any(seen) then raise exception 'two breaks on % start at %', p_size, m; end if;
+    if o < last then raise exception 'on %, buying more should take off at least as much', p_size; end if;
+    seen := seen || m; last := o;
+    out := out || jsonb_build_array(jsonb_build_object('min', m, 'off', round(o, 4)));
+  end loop;
+  return out;
+end $$;
+
+create or replace function _item_json(p_id uuid, p_cost boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', i.id, 'name', i.name, 'item_no', i.item_no, 'category', i.category, 'nacs', i.nacs,
+    'vendor', i.vendor, 'unit', i.unit, 'ml', i.ml, 'oz', i.oz, 'age', i.age, 'active', i.active, 'updated_at', i.updated_at,
+    'cost_hidden', not p_cost, 'photo', i.photo, 'break_group', i.break_group,
+    'sizes', coalesce((select jsonb_agg(jsonb_build_object('id', z.id, 'name', z.name, 'n', z.n, 'upc', z.upc,
+      'cost', case when p_cost then z.cost end, 'prices', z.prices, 'breaks', z.breaks) order by z.pos, z.n) from item_sizes z where z.item_id = i.id), '[]'::jsonb))
+  from items i where i.id = p_id $$;
+
+create or replace function item_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare iid uuid; z jsonb; v_pos int := 0; keep uuid[] := '{}'; u text; other text; zid uuid; before jsonb; isnew boolean;
+begin
+  perform _need(p_company, 'manager');
+  if length(trim(coalesce(p->>'name',''))) = 0 then raise exception 'type the item name'; end if;
+  if jsonb_array_length(coalesce(p->'sizes','[]'::jsonb)) = 0 then raise exception 'add at least one size'; end if;
+  iid := nullif(p->>'id','')::uuid;
+  isnew := iid is null;
+  if not isnew then
+    if not exists (select 1 from items where id = iid and company_id = p_company) then raise exception 'item not found'; end if;
+    before := _item_json(iid, true);
+    update items set name = trim(p->>'name'), item_no = trim(coalesce(p->>'item_no','')), category = coalesce(nullif(p->>'category',''),'other'),
+      nacs = trim(coalesce(p->>'nacs','')), vendor = trim(coalesce(p->>'vendor','')), unit = coalesce(nullif(trim(p->>'unit'),''),'each'),
+      ml = _num(p->'ml'), oz = _num(p->'oz'), age = coalesce((p->>'age')::int, 0), active = coalesce((p->>'active')::boolean, true),
+      break_group = left(trim(coalesce(p->>'break_group','')), 60), updated_at = now() where id = iid;
+  else
+    insert into items(company_id, name, item_no, category, nacs, vendor, unit, ml, oz, age, break_group)
+      values (p_company, trim(p->>'name'), trim(coalesce(p->>'item_no','')), coalesce(nullif(p->>'category',''),'other'), trim(coalesce(p->>'nacs','')),
+        trim(coalesce(p->>'vendor','')), coalesce(nullif(trim(p->>'unit'),''),'each'), _num(p->'ml'), _num(p->'oz'), coalesce((p->>'age')::int, 0), left(trim(coalesce(p->>'break_group','')), 60))
+      returning id into iid;
+  end if;
+  for z in select * from jsonb_array_elements(p->'sizes') loop
+    if nullif(z->>'id','') is not null then keep := keep || (z->>'id')::uuid; end if;
+    u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+    if length(trim(coalesce(z->>'name',''))) = 0 then raise exception 'every size needs a name, like Carton or Box'; end if;
+    if coalesce((z->>'n')::int, 0) < 1 then raise exception 'how many in a %? Type a whole number, 1 or more', z->>'name'; end if;
+    if u <> '' and length(u) not between 6 and 14 then raise exception 'the UPC on % should be 6 to 14 digits', z->>'name'; end if;
+    perform _breaks_clean(z->'breaks', z->>'name');
+    if u <> '' then
+      select i.name into other from item_sizes s join items i on i.id = s.item_id
+        where s.company_id = p_company and s.upc = u and s.item_id <> iid limit 1;
+      if other is not null then raise exception 'UPC % is already on %', u, other; end if;
+    end if;
+  end loop;
+  if (select count(distinct regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g')) from jsonb_array_elements(p->'sizes') q where regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g') <> '')
+     <> (select count(*) from jsonb_array_elements(p->'sizes') q where regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g') <> '') then
+    raise exception 'two sizes have the same UPC'; end if;
+  delete from item_sizes where item_id = iid and not (id = any(keep));
+  update item_sizes set upc = '' where item_id = iid;          -- UPCs go back on below, so two sizes can swap them in one save
+  for z in select * from jsonb_array_elements(p->'sizes') loop
+    v_pos := v_pos + 1;
+    u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+    zid := nullif(z->>'id','')::uuid;
+    if zid is not null and exists (select 1 from item_sizes where id = zid and item_id = iid) then
+      update item_sizes set pos = v_pos, name = trim(z->>'name'), n = (z->>'n')::int, cost = _num(z->'cost'), breaks = _breaks_clean(z->'breaks', z->>'name'),
+        prices = coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null), '{}'::jsonb)
+        where id = zid;
+    else
+      insert into item_sizes(item_id, company_id, pos, name, n, upc, cost, breaks, prices)
+        values (iid, p_company, v_pos, trim(z->>'name'), (z->>'n')::int, '', _num(z->'cost'), _breaks_clean(z->'breaks', z->>'name'),
+          coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null), '{}'::jsonb))
+        returning id into zid;
+    end if;
+    update item_sizes set upc = u where id = zid;
+  end loop;
+  perform _log(p_company, case when isnew then 'item added' else 'item changed' end,
+    jsonb_build_object('item', iid, 'name', trim(p->>'name'), 'before', before));
+  return _item_json(iid, true);
+end $$;

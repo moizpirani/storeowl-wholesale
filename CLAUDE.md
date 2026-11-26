@@ -94,7 +94,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   `#cu-licbar` (what's missing or ended, "You can still sell to them", **Email the store** = mailto with the request, **Upload now** = add a copy,
   then the Licenses tab opens with the copy panel); Licenses tab lists needed ones first with what they cover, others say "Not needed";
   Prices tab says "<license> ended … · you'll be warned". All license issues are orange. Still to come: the Counter's "Sell anyway" box with a
-  reason, written to History (Phase 2), license reminder emails to stores (needs a sender), volume price breaks.
+  reason, written to History (Phase 2), license reminder emails to stores (needs a sender).
 - **Phase 1, part 5 = item photos (built 2026-11-26, Moiz approved the pictures, then "yes"; migration `phase1_item_photos_2026_11_26`
   on the test database; ON TEST since 2026-11-26, Moiz: "put it on test"):**
   one photo per item (sizes share it), shrunk to ≤ 800 px JPEG on the device (`readCopy(file, 800, true)`), PUBLIC bucket `item-photos`
@@ -104,3 +104,13 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   (phone camera) / Pick a photo, or Take or pick a new photo / Remove photo (two taps); a new item keeps the photo until it's saved.
   **Add photos** (`#it-photos`): pick or drop many photos; a file named with any size's UPC (leading zeros or the check digit may be
   missing, `upcSame`) or the item # matches by itself (`photoMatch`), others get "Pick the item"; Save N photos (last one wins for one item).
+- **Phase 1, part 6 = quantity breaks (built 2026-11-26, Moiz approved the pictures, then "yes build it and put it to test"; migration
+  `phase1_quantity_breaks_2026_11_26` NOT YET on the test database — the database tool's approval question went unanswered again;
+  branch `test` NOT pushed until it is):** per size `item_sizes.breaks` = [{min, off}] (buys at least `min` → `off` dollars off each, at
+  EVERY price level — Moiz chose "$ off each", not a price per level), `items.break_group` (items with the same group name count together,
+  e.g. any Seneca cartons). Checked in `breaksCheck` (rules.js) and `_breaks_clean` (database): whole number ≥ 2, amount off > 0, no
+  quantity twice, more bought takes off at least as much, never more than the price. Item panel: **Quantity breaks** under Sizes and
+  prices (size, buys at least, off each, the price for each level updating while typing, + Add a break), **Count together with** (a group
+  name with the existing ones offered; the hint says how many items count). Customer Prices tab: "5+ $33.90 · 10+ $33.60" under their
+  price. `breakOff` / `breakPrice` are ready for the Counter (Phase 2), which applies them. Still to check in Phase 6: a break must not
+  take a cigarette below a state's minimum price.

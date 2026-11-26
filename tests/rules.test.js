@@ -40,3 +40,16 @@ test('a photo file finds its item by UPC (any way it is written) or item #', () 
   assert.equal(photoMatch('IMG_2291.jpg', items), null);
   assert.ok(upcSame('28200003843', '028200003843')); assert.ok(!upcSame('028200003843', '014700319017'));
 });
+
+import { breakOff, breakPrice, breakLine, breaksCheck } from '../src/rules.js';
+test('quantity breaks: the biggest break reached is taken off each', () => {
+  const bs = [{ min: 5, off: 0.3 }, { min: 10, off: 0.6 }];
+  assert.equal(breakOff(bs, 4), 0); assert.equal(breakOff(bs, 5), 0.3); assert.equal(breakOff(bs, 12), 0.6);
+  assert.equal(breakPrice(34.2, bs, 10), 33.6);
+  assert.equal(breakLine(34.2, bs), '5+ $33.90 · 10+ $33.60');
+  assert.equal(breaksCheck({ name: 'Carton', prices: { 1: 34.2 }, breaks: bs }), '');
+  assert.match(breaksCheck({ name: 'Carton', prices: {}, breaks: [{ min: 1, off: 0.3 }] }), /2 or more/);
+  assert.match(breaksCheck({ name: 'Carton', prices: {}, breaks: [{ min: 5, off: null }] }), /amount off/);
+  assert.match(breaksCheck({ name: 'Carton', prices: {}, breaks: [{ min: 5, off: 0.6 }, { min: 10, off: 0.3 }] }), /at least as much/);
+  assert.match(breaksCheck({ name: 'Carton', prices: { 1: 1 }, breaks: [{ min: 5, off: 2 }] }), /more than the price/);
+});

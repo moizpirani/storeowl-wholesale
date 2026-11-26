@@ -163,6 +163,7 @@ export function itemCheck(p) {
       const v = z.prices[k];
       if (v != null && (isNaN(v) || v < 0)) return 'A price on ' + z.name + ' isn’t a number.';
     }
+    const bk = breaksCheck(z); if (bk) return bk;
   }
   return '';
 }
@@ -213,4 +214,32 @@ export function photoMatch(fileName, items) {
   }
   const it2 = base && (items || []).find((i) => i.item_no && i.item_no.trim().toLowerCase() === base.toLowerCase());
   return it2 ? { id: it2.id, how: 'item' } : null;
+}
+
+// ---------- Quantity breaks: buys at least `min` of a size → `off` dollars off each, at every price level ----------
+export function breakOff(breaks, qty) {
+  let off = 0;
+  (breaks || []).forEach((b) => { if (qty >= b.min && b.off > off) off = b.off; });
+  return off;
+}
+export function breakPrice(price, breaks, qty) { return price == null ? null : Math.round((price - breakOff(breaks, qty)) * 100) / 100; }
+// "5+ $33.90 · 10+ $33.60" for one price.
+export function breakLine(price, breaks) {
+  if (price == null || !(breaks || []).length) return '';
+  return breaks.slice().sort((a, b) => a.min - b.min).map((b) => b.min + '+ $' + money(price - b.off)).join(' · ');
+}
+// Plain-words problem with one size's breaks, or ''. prices = that size's prices by level.
+export function breaksCheck(z) {
+  const bs = z.breaks || [], seen = {};
+  if (bs.length > 10) return 'Up to 10 breaks on a ' + z.name + '.';
+  let last = 0;
+  for (const b of bs.slice().sort((a, c) => (+a.min) - (+c.min))) {
+    if (!(Number.isInteger(+b.min) && +b.min >= 2) || b.min === '') return 'A break on ' + z.name + ' needs “buys at least” as a whole number, 2 or more.';
+    if (b.off == null || isNaN(b.off) || b.off <= 0) return 'A break on ' + z.name + ' needs an amount off.';
+    if (seen[+b.min]) return 'Two breaks on ' + z.name + ' start at ' + b.min + '.';
+    if (b.off < last) return 'On ' + z.name + ', buying more should take off at least as much.';
+    for (const k of Object.keys(z.prices || {})) { const p = z.prices[k]; if (p != null && !isNaN(p) && p - b.off <= 0) return 'The break on ' + z.name + ' takes off more than the price.'; }
+    seen[+b.min] = 1; last = b.off;
+  }
+  return '';
 }

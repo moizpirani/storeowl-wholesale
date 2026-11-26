@@ -7,7 +7,7 @@ import { stateName } from './states.js';
 import {
   CATEGORIES, catName, TERMS, termName, LICENSES, licName, SIZE_NAMES, settingsOf, cleanUpc, upcShow, num, money, margin,
   licState, custIssues, licNeeded, custNeeds, licProblems, problemText, saleWarnings, custStateOf, licNeedCheck,
-  suggestedLic, LIC_COVER_TEXT, SUGGEST_NOTE, photoMatch, itemIssues, mainSize, sizeLine, itemCheck, custCheck, levelsCheck, todayIso, shortDate, initials
+  suggestedLic, LIC_COVER_TEXT, SUGGEST_NOTE, photoMatch, breakLine, plural, itemIssues, mainSize, sizeLine, itemCheck, custCheck, levelsCheck, todayIso, shortDate, initials
 } from './rules.js';
 
 const PAGE = 200;
@@ -43,13 +43,14 @@ export function makeCatalog(X) {
   // =====================================================================
   const ITEM_KEYS = ['name', 'item_no', 'category', 'nacs', 'vendor', 'unit', 'ml', 'oz', 'age', 'active'];
   function itemDraft(it) {
-    if (!it) return { name: '', item_no: '', category: 'cigarettes', nacs: '', vendor: '', unit: 'pack', ml: '', oz: '', age: 21, active: true,
-      sizes: [{ name: 'Carton', n: 10, upc: '', cost: '', prices: {} }] };
+    if (!it) return { name: '', item_no: '', category: 'cigarettes', nacs: '', vendor: '', unit: 'pack', ml: '', oz: '', age: 21, active: true, break_group: '',
+      sizes: [{ name: 'Carton', n: 10, upc: '', cost: '', prices: {}, breaks: [] }] };
     const d = {}; ITEM_KEYS.forEach((k) => { d[k] = it[k] == null ? '' : it[k]; });
-    d.id = it.id;
+    d.id = it.id; d.break_group = it.break_group || '';
     const f2 = (v) => (v == null ? '' : Math.round(v * 100) === v * 100 ? Number(v).toFixed(2) : String(Number(v)));
     d.sizes = it.sizes.map((z) => ({ id: z.id, name: z.name, n: z.n, upc: z.upc, cost: f2(z.cost),
-      prices: Object.fromEntries(Object.entries(z.prices || {}).map(([k, v]) => [k, f2(v)])) }));
+      prices: Object.fromEntries(Object.entries(z.prices || {}).map(([k, v]) => [k, f2(v)])),
+      breaks: (z.breaks || []).map((b) => ({ min: String(b.min), off: f2(b.off) })) }));
     return d;
   }
   function itemMatch(it, Q) {
@@ -148,7 +149,7 @@ export function makeCatalog(X) {
         '<div class="g3">' + inp('Counted in', 'unit', ' list="unit-names"') + inp('Vendor', 'vendor') + inp('NACS code', 'nacs') + '</div>' +
         '<datalist id="unit-names">' + ['pack', 'can', 'each', 'cigar', 'pouch', 'bottle', 'tin', 'pod'].map((s) => '<option value="' + s + '">').join('') + '</datalist>' +
         (showMl || showOz ? '<div class="g3">' + (showMl ? inp('ml of liquid in one ' + esc(d.unit || 'unit'), 'ml', ' inputmode="decimal"') : '') + (showOz ? inp('Ounces in one ' + esc(d.unit || 'unit'), 'oz', ' inputmode="decimal"') : '') + '</div>' : '') +
-        '<div class="sec">Sizes and prices</div>' + sizes +
+        '<div class="sec">Sizes and prices</div>' + sizes + breaksHtml(d, ro) +
         (!isNew && mgr ? '<label class="chk1"><input type="checkbox" id="it-active"' + (d.active === false ? '' : ' checked') + ' data-guide="items-item-active"> Selling this item</label>' : '');
     }
     const dirty = isNew || JSON.stringify(d) !== S.orig;
@@ -158,6 +159,39 @@ export function makeCatalog(X) {
       (isNew ? '' : '<button class="x" id="it-prev" aria-label="Item before" data-guide="items-item-previous">‹</button><button class="x" id="it-next" aria-label="Next item" data-guide="items-item-next">›</button>') +
       '<button class="x" id="it-close" aria-label="Close" data-guide="items-item-close">✕</button></div>' + kpi + tabs + '<div class="pb">' + body + '</div>' + foot + '</div>';
   }
+  // ---------- quantity breaks: buys at least N of a size → $ off each, at every price level ----------
+  const bkPrice = (d, i, l, b) => { const p = num((d.sizes[i].prices || {})[l.n]), o = num(b.off); return p == null || isNaN(p) ? '—' : o == null || isNaN(o) ? money$(p) : money$(Math.round((p - o) * 100) / 100); };
+  const groups = () => Array.from(new Set((A.items || []).map((x) => (x.break_group || '').trim()).filter(Boolean))).sort();
+  function bkHint(d) {
+    const g = String(d.break_group || '').trim(), first = d.sizes.find((z) => (z.breaks || []).length), b = first && first.breaks[0];
+    const what = b && +b.min >= 2 ? b.min + ' ' + plural(String(first.name || 'unit').toLowerCase(), +b.min) : 'The quantity';
+    if (!g) return what + ' of this item on one invoice get the break.';
+    const n = (A.items || []).filter((x) => x.id !== d.id && (x.break_group || '').trim().toLowerCase() === g.toLowerCase()).length + 1;
+    return what + ' of any item in “' + g + '” (' + n + ' item' + (n === 1 ? '' : 's') + ') on one invoice get the break.';
+  }
+  function breaksHtml(d, ro) {
+    const L = levels(), rows = [];
+    d.sizes.forEach((z, i) => (z.breaks || []).forEach((b, j) => rows.push([z, i, b, j])));
+    if (ro && !rows.length) return '';
+    const dis = ro ? ' disabled' : '';
+    return '<div class="sec">Quantity breaks</div><p class="sm gap">Buy more, pay less. Works with every price level.</p>' +
+      (rows.length ? '<table class="sz brk"><thead><tr><th>Size</th><th>Buys at least</th><th>Off each</th>' + L.map((l) => '<th class="n">' + esc(l.name) + '</th>').join('') + (ro ? '' : '<th></th>') + '</tr></thead><tbody>' +
+        rows.map(([z, i, b, j]) => '<tr><td><select class="bx" data-bks="' + i + '|' + j + '"' + dis + ' data-guide="items-item-break-size">' + d.sizes.map((y, k) => opt(k, y.name || 'Size ' + (k + 1), k === i)).join('') + '</select></td>' +
+          '<td><input class="bx s" inputmode="numeric" data-bk="' + i + '|' + j + '|min" value="' + esc(b.min) + '"' + dis + ' data-guide="items-item-break-min"></td>' +
+          '<td><input class="bx m" inputmode="decimal" data-bk="' + i + '|' + j + '|off" value="' + esc(b.off) + '"' + dis + ' data-guide="items-item-break-off"></td>' +
+          L.map((l) => '<td class="n mut" id="bkp-' + i + '-' + j + '-' + l.n + '">' + bkPrice(d, i, l, b) + '</td>').join('') +
+          (ro ? '' : '<td><button class="xb" data-bkrm="' + i + '|' + j + '" aria-label="Take this break off" data-guide="items-item-break-remove">×</button></td>') + '</tr>').join('') + '</tbody></table>' : '') +
+      (ro ? '' : '<button class="btn sm addz" id="it-badd" data-guide="items-item-break-add">+ Add a break</button>') +
+      (rows.length || d.break_group ? '<div class="grp"><label class="f"><span>Count together with</span><input data-itk="break_group" list="bk-groups" placeholder="Just this item" value="' + esc(d.break_group || '') + '"' + dis + ' data-guide="items-item-break-group"></label>' +
+        '<datalist id="bk-groups">' + groups().map((g) => '<option value="' + esc(g) + '">').join('') + '</datalist>' +
+        '<p class="sm" id="bk-hint">' + esc(bkHint(d)) + '</p></div>' : '');
+  }
+  function updBreaks(d) {
+    const L = levels();
+    d.sizes.forEach((z, i) => (z.breaks || []).forEach((b, j) => L.forEach((l) => { const c = q('#bkp-' + i + '-' + j + '-' + l.n); if (c) c.textContent = bkPrice(d, i, l, b); })));
+    const h = q('#bk-hint'); if (h) h.textContent = bkHint(d);
+  }
+
   // ---------- item photo (one per item; every size shares it) ----------
   function photoBox(it, ro) {
     const S = A.it, url = it ? it.photo_url : (S.newPhoto || {}).url;
@@ -295,6 +329,7 @@ export function makeCatalog(X) {
       if (q('#ik-p')) q('#ik-p').textContent = p0 != null && !isNaN(p0) ? money$(p0) : '—';
       const m = q('#ik-mg'); if (m) { m.textContent = mg == null || isNaN(mg) ? '—' : mg.toFixed(1) + '%'; m.className = mg != null && mg < 0 ? 'bad' : 'ok'; }
       if (q('#ik-size')) q('#ik-size').textContent = sizeLine({ name: z0.name || '', n: +z0.n || 1 }, d.unit);
+      updBreaks(d);
     };
     $$('[data-itk]').forEach((el) => {
       const k = el.dataset.itk;
@@ -309,9 +344,20 @@ export function makeCatalog(X) {
       };
     });
     $$('[data-zrm]').forEach((b) => { b.onclick = () => { d.sizes.splice(+b.dataset.zrm, 1); X.render(); }; });
+    $$('[data-bk]').forEach((el) => { el.oninput = () => { const [i, j, k] = el.dataset.bk.split('|'); d.sizes[+i].breaks[+j][k] = el.value; upd(); }; });
+    $$('[data-bks]').forEach((el) => { el.onchange = () => {
+      const [i, j] = el.dataset.bks.split('|').map(Number), b = d.sizes[i].breaks.splice(j, 1)[0];
+      (d.sizes[+el.value].breaks = d.sizes[+el.value].breaks || []).push(b); X.render();
+    }; });
+    $$('[data-bkrm]').forEach((b) => { b.onclick = () => { const [i, j] = b.dataset.bkrm.split('|').map(Number); d.sizes[i].breaks.splice(j, 1); X.render(); }; });
+    if (q('#it-badd')) q('#it-badd').onclick = () => {
+      const z = d.sizes[0], bs = (z.breaks = z.breaks || []), last = bs[bs.length - 1];
+      bs.push({ min: last && +last.min ? String(+last.min * 2) : '5', off: '' }); X.render();
+      const ins = $$('[data-bk$="|off"]'); if (ins.length) ins[ins.length - 1].focus();
+    };
     if (q('#it-zadd')) q('#it-zadd').onclick = () => {
       const last = d.sizes[d.sizes.length - 1];
-      d.sizes.push({ name: last && last.name === 'Carton' ? 'Case' : '', n: last ? (+last.n || 1) * (last.name === 'Carton' ? 50 : 1) : 1, upc: '', cost: '', prices: {} });
+      d.sizes.push({ name: last && last.name === 'Carton' ? 'Case' : '', n: last ? (+last.n || 1) * (last.name === 'Carton' ? 50 : 1) : 1, upc: '', cost: '', prices: {}, breaks: [] });
       X.render();
     };
     if (q('#it-active')) q('#it-active').onchange = (e) => { d.active = e.target.checked; upd(); };
@@ -333,7 +379,9 @@ export function makeCatalog(X) {
     const p = Object.assign({}, d, {
       ml: num(d.ml), oz: num(d.oz), age: +d.age || 0,
       sizes: d.sizes.map((z) => ({ id: z.id, name: String(z.name || '').trim(), n: +z.n, upc: cleanUpc(z.upc), cost: num(z.cost),
-        prices: Object.fromEntries(levels().map((l) => [l.n, num(z.prices[l.n])]).filter(([, v]) => v != null)) }))
+        prices: Object.fromEntries(levels().map((l) => [l.n, num(z.prices[l.n])]).filter(([, v]) => v != null)),
+        breaks: (z.breaks || []).map((b) => ({ min: String(b.min).trim() === '' ? '' : +b.min, off: num(b.off) })) })),
+      break_group: String(d.break_group || '').trim()
     });
     if (A.items[0] && A.items[0].cost_hidden) p.sizes.forEach((z) => { delete z.cost; });
     const bad = itemCheck(p) || (p.ml != null && isNaN(p.ml) ? 'The ml isn’t a number.' : '') || (p.oz != null && isNaN(p.oz) ? 'The ounces aren’t a number.' : '');
@@ -655,7 +703,7 @@ export function makeCatalog(X) {
     return out.slice(0, 150).map(([it, z]) => {
       if (!(it.category in warnCats)) warnCats[it.category] = saleWarnings(c, it.category, sets(), today(), home()).filter((w) => w.kind !== 'resale' && w.kind !== 'location');
       const p = z.prices[c.level], w = warnCats[it.category][0];
-      return '<tr><td><b>' + esc(it.name) + '</b>' + (w ? '<span class="sub0 miss">' + esc(problemText(w)) + ' · you’ll be warned</span>' : '') + '</td><td class="mut">' + esc(sizeLine(z, it.unit)) + '</td><td class="mut">' + esc(upcShow(z.upc)) + '</td><td class="n"><b>' + (p != null ? money$(p) : '<span class="miss">No price</span>') + '</b></td></tr>';
+      return '<tr><td><b>' + esc(it.name) + '</b>' + (w ? '<span class="sub0 miss">' + esc(problemText(w)) + ' · you’ll be warned</span>' : '') + '</td><td class="mut">' + esc(sizeLine(z, it.unit)) + '</td><td class="mut">' + esc(upcShow(z.upc)) + '</td><td class="n"><b>' + (p != null ? money$(p) : '<span class="miss">No price</span>') + '</b>' + (p != null && (z.breaks || []).length ? '<span class="brsub">' + esc(breakLine(p, z.breaks)) + '</span>' : '') + '</td></tr>';
     }).join('') + (out.length > 150 ? '<tr><td colspan="4" class="empty">Showing 150 of ' + out.length.toLocaleString() + ' · search to find others</td></tr>' : '');
   }
   function custPricesHtml(c) {

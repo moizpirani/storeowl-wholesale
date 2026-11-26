@@ -82,6 +82,25 @@ test('price levels, items and customers', async () => {
   assert.match($('#it-err').textContent, /already on Seneca/);
   $('#it-close').click(); await tick();
   assert.match($('th:nth-child(5)').textContent, /Route 1/);
+  // Quantity breaks: 5+ cartons $0.30 off; the price for every level shows while typing; it saves with a group.
+  $('[data-itrow]').click(); await tick();
+  $('#it-badd').click(); await tick(); checkTags('item with a break');
+  assert.equal($('[data-bk="0|0|min"]').value, '5');
+  const off = $('[data-bk="0|0|off"]'); type(off, '0.30');
+  assert.equal($('[data-bk="0|0|off"]'), off, 'typing never redraws');
+  assert.equal($('#bkp-0-0-1').textContent, '$33.90');
+  assert.match($('#bk-hint').textContent, /5 cartons of this item/);
+  type('[data-itk="break_group"]', 'Seneca cartons');
+  assert.match($('#bk-hint').textContent, /any item in “Seneca cartons” \(1 item\)/);
+  $('#it-save').click(); await tick();
+  assert.deepEqual(db.S.items[0].sizes[0].breaks, [{ min: 5, off: 0.3 }]);
+  assert.equal(db.S.items[0].break_group, 'Seneca cartons');
+  // A break bigger than the price is refused in plain words.
+  type('[data-bk="0|0|off"]', '99'); $('#it-save').click(); await tick();
+  assert.match($('#it-err').textContent, /more than the price/);
+  $('#it-undo').click(); await tick();
+  $('#it-close').click(); await tick();
+
   // Item photos: add one to Seneca; it shows on the item and in the list; "No photo" finds the rest.
   $('[data-itrow]').click(); await tick(); checkTags('item panel with no photo');
   const phIn = $('[data-itph="pick"]');
@@ -175,6 +194,7 @@ test('price levels, items and customers', async () => {
   type($$('[data-lk="2|expires"]')[0], '2026-11-01'); $('#cl-save').click(); await tick(3);   // back to ended for the checks below
   $('[data-cutab="prices"]').click(); await tick(); checkTags('customer prices');
   assert.match($('#cp-rows').textContent, /\$33\.90/);
+  assert.match($('#cp-rows').textContent, /5\+ \$33\.60/, 'their break price under their price');
   assert.match($('#cp-rows').textContent, /Tobacco license ended Nov 1 · you’ll be warned/);
   assert.doesNotMatch($('#cp-rows').textContent, /Can’t sell/);
 

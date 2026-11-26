@@ -117,7 +117,14 @@ test('Phase 1: price levels, items with sizes, customers, licenses, notes', asyn
   await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Other', sizes: [{ name: 'Box', n: 1, upc: '014700319017' }] })], /already on Seneca/);
   await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'X', sizes: [{ name: 'Box', n: 0 }] })], /whole number/);
   await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'X', sizes: [] })], /at least one size/);
-  // A photo: only a file under this company and item; taking it off leaves ''.
+  // Quantity breaks are kept sorted with the item; bad ones are refused in plain words.
+  const brk = await one(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify(Object.assign({}, it, { break_group: ' Seneca cartons ',
+    sizes: it.sizes.map((z, i) => Object.assign({}, z, { breaks: i ? [] : [{ min: 10, off: '0.60' }, { min: 5, off: 0.3 }] })) }))]);
+  assert.equal(brk.break_group, 'Seneca cartons');
+  assert.deepEqual(brk.sizes[0].breaks.map((b) => [b.min, Number(b.off)]), [[5, 0.3], [10, 0.6]]);
+  await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify(Object.assign({}, brk, { sizes: brk.sizes.map((z, i) => Object.assign({}, z, { breaks: i ? [] : [{ min: 1, off: 0.3 }] })) }))], /2 or more/);
+  await fails(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify(Object.assign({}, brk, { sizes: brk.sizes.map((z, i) => Object.assign({}, z, { breaks: i ? [] : [{ min: 5, off: 0.6 }, { min: 10, off: 0.3 }] })) }))], /at least as much/);
+    // A photo: only a file under this company and item; taking it off leaves ''.
   const iph = await one(db, 'select item_photo_set($1, $2, $3)', [cid, it.id, cid + '/' + it.id + '-1.jpg']);
   assert.equal(iph.photo, cid + '/' + it.id + '-1.jpg');
   await fails(db, 'select item_photo_set($1, $2, $3)', [cid, it.id, 'someone-else/' + it.id + '-1.jpg'], /can't be used/);

@@ -267,10 +267,11 @@ export function makeFake(opts) {
       if (!it) { it = { id: id(), company_id: cid }; S.items.push(it); }
       Object.assign(it, { name: p.name.trim(), item_no: (p.item_no || '').trim(), category: p.category || 'other', nacs: (p.nacs || '').trim(),
         vendor: (p.vendor || '').trim(), unit: (p.unit || '').trim() || 'each', ml: nz(p.ml), oz: nz(p.oz), age: +p.age || 0,
-        active: p.active !== false, updated_at: new Date().toISOString() });
+        active: p.active !== false, break_group: String(p.break_group || '').trim().slice(0, 60), updated_at: new Date().toISOString() });
       it.sizes = sizes.map((z) => {
         const pr = {}; Object.keys(z.prices).forEach((k) => { const v = nz(z.prices[k]); if (v != null) pr[k] = v; });
-        return { id: z.id || id(), name: z.name.trim(), n: z.n, upc: cleanUpc(z.upc), cost: z.cost, prices: pr };
+        const breaks = (z.breaks || []).map((b) => ({ min: +b.min, off: Math.round(+b.off * 10000) / 10000 })).sort((a, b) => a.min - b.min);
+        return { id: z.id || id(), name: z.name.trim(), n: z.n, upc: cleanUpc(z.upc), cost: z.cost, prices: pr, breaks };
       });
       log(cid, isnew ? 'item added' : 'item changed', { item: it.id, name: it.name, before });
       return itemOut(it, true);
