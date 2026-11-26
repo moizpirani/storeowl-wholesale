@@ -40,6 +40,8 @@ export function makeDb(sb) {
     customer: (id, cust) => rpc('customer_get', { p_company: id, p_id: cust }),
     customerPut: (id, p) => rpc('customer_put', { p_company: id, p }),
     licensePut: (id, cust, p) => rpc('license_put', { p_company: id, p_customer: cust, p }),
+    copyAdd: async () => { throw new Error('License copies aren’t on this database yet'); },
+    copyRemove: async () => { throw new Error('License copies aren’t on this database yet'); },
     noteAdd: (id, cust, text) => rpc('note_add', { p_company: id, p_customer: cust, p_text: text }),
     importStart: (id, p) => rpc('import_start', { p_company: id, p }),
     importItems: (id, imp, rows) => rpc('import_items', { p_company: id, p_import: imp, p_rows: rows }),
@@ -94,6 +96,8 @@ export function makeFake(opts) {
     if (full) {
       o.notes = S.notes.filter((x) => x.customer_id === c.id).slice().reverse().map((x) => ({ id: x.id, text: x.text, by: x.by, at: x.at }));
       o.history = S.log.filter((x) => x.company_id === c.company_id && x.detail.customer === c.id).slice(0, 100);
+      o.copies = (S.copies || []).filter((x) => x.customer_id === c.id && !x.removed_at).slice().reverse()
+        .map((x) => ({ id: x.id, kind: x.kind, name: x.name, type: x.type, url: x.url, number: x.number, expires: x.expires, by: x.by, at: x.at }));
     }
     return o;
   }
@@ -280,6 +284,31 @@ export function makeFake(opts) {
       if ((p.number || '').trim()) c.licenses.push({ kind: p.kind, number: p.number.trim(), expires: p.expires || null, copy: !!p.copy });
       c.licenses.sort((a, b) => a.kind.localeCompare(b.kind));
       log(cid, 'license changed', { customer: c.id, kind: p.kind, before, after: c.licenses.find((l) => l.kind === p.kind) || null });
+      return custOut(c, true);
+    },
+    async copyAdd(cid, cust, kind, f) {
+      const m = need(cid, 'manager');
+      const c = S.customers.find((x) => x.id === cust && x.company_id === cid);
+      if (!c) throw new Error('Customer not found');
+      if (!/^image\/|^application\/pdf$/.test(f.type || '')) throw new Error('Pick a photo or a PDF');
+      if ((f.size || 0) > 10 * 1024 * 1024) throw new Error('That file is bigger than 10 MB');
+      const l = c.licenses.find((x) => x.kind === kind) || {};
+      S.copies = S.copies || [];
+      S.copies.push({ id: id(), company_id: cid, customer_id: cust, kind, name: f.name || 'copy', type: f.type, url: f.url, number: l.number || '', expires: l.expires || null,
+        by: m.name || me.email, at: f.at || new Date().toISOString(), removed_at: null });
+      if (l.kind) l.copy = true;
+      log(cid, 'license copy added', { customer: c.id, kind, name: f.name });
+      return custOut(c, true);
+    },
+    async copyRemove(cid, cust, copyId) {
+      need(cid, 'manager');
+      const c = S.customers.find((x) => x.id === cust && x.company_id === cid);
+      const x = (S.copies || []).find((y) => y.id === copyId && y.customer_id === cust);
+      if (!c || !x) throw new Error('Copy not found');
+      x.removed_at = new Date().toISOString();
+      const l = c.licenses.find((y) => y.kind === x.kind);
+      if (l) l.copy = S.copies.some((y) => y.customer_id === cust && y.kind === x.kind && !y.removed_at);
+      log(cid, 'license copy removed', { customer: c.id, kind: x.kind, name: x.name });
       return custOut(c, true);
     },
     async importStart(cid, p) {

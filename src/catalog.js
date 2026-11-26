@@ -437,6 +437,68 @@ export function makeCatalog(X) {
         '<button class="btn" id="cu-undo" data-guide="customers-details-undo">' + (isNew ? 'Cancel' : 'Undo') + '</button><button class="btn amber" id="cu-save" data-guide="customers-details-save">' + (isNew ? 'Add customer' : 'Save') + '</button></div></div>');
   }
   function custDirtyDetails() { const S = A.cu; return S.open === 'new' || JSON.stringify(S.ed) !== S.orig; }
+  // ---------- license copies (a photo or PDF of each license) ----------
+  const copiesOf = (c, k) => (c.copies || []).filter((x) => x.kind === k);
+  const isPdf = (x) => /pdf/.test(x.type || '');
+  const addBtn = (k, label, cls) => '<label class="btn sm lcadd' + (cls ? ' ' + cls : '') + '"><input type="file" accept="image/*,application/pdf" data-lcadd="' + k + '" data-guide="customers-licenses-copy-add">' + label + '</label>';
+  function copyCell(c, k, ro) {
+    const cur = copiesOf(c, k)[0];
+    if (A.cu.lcBusy === k) return '<span class="mut">Saving…</span>';
+    if (cur) return '<button class="lcthumb' + (A.cu.lcv === k ? ' on' : '') + '" data-lcview="' + k + '" data-guide="customers-licenses-copy-view">' +
+      (isPdf(cur) ? '<i class="pdf">PDF</i>' : '<img src="' + esc(cur.url) + '" alt="">') + '<span>' + esc(shortDate(cur.at.slice(0, 10))) + '</span></button>';
+    return ro ? '<span class="mut">—</span>' : addBtn(k, 'Add copy');
+  }
+  function copyPanel(c, ro) {
+    const S = A.cu, k = S.lcv; if (!k) return '';
+    const all = copiesOf(c, k); if (!all.length) return '';
+    const x = all.find((y) => y.id === S.lcid) || all[0], cur = x === all[0];
+    const L = (c.licenses || []).find((l) => l.kind === k) || {}, licNow = { number: L.number || '', expires: L.expires || null };   // the current copy shows the license as it is now
+    const kv2 = (a, b) => '<div class="kv"><span>' + a + '</span><b>' + b + '</b></div>';
+    return '<aside class="lcpan" id="lc-pan"><div class="lchd"><b>' + esc(licName(k)) + ' copy</b><button class="x" id="lc-x" data-guide="customers-licenses-copy-close">✕</button></div>' +
+      '<div class="lcpic">' + (isPdf(x) ? '<iframe src="' + esc(x.url) + '" title="License copy"></iframe>' : '<img src="' + esc(x.url) + '" alt="License copy">') + '</div>' +
+      '<div class="lcinfo">' + (cur ? '' : '<p class="lcold">An older copy · replaced later</p>') +
+      (cur && !ro && all[1] && (all[1].expires || '') === (licNow.expires || '') ? '<p class="lcold">Same end date as the last copy. If the new license ends later, change it here.</p>' : '') +
+      (cur && !ro ? (() => { const i = S.led.findIndex((l) => l.kind === k), l = S.led[i];
+          return '<div class="lcedit"><label class="fld"><span>License number</span><input class="bx" data-lk="' + i + '|number" value="' + esc(l.number) + '" data-guide="customers-licenses-copy-number"></label>' +
+            '<label class="fld"><span>Expires</span><input class="bx" type="date" data-lk="' + i + '|expires" value="' + esc(l.expires) + '" data-guide="customers-licenses-copy-expires"></label>' +
+            '<button class="btn" id="lc-save" data-guide="customers-licenses-copy-save">Save</button></div>'; })()
+        : kv2('Number on file then', esc(x.number || '—')) + kv2('Expires then', x.expires ? esc(shortDate(x.expires, true)) : '—')) +
+      kv2('Added', esc(shortDate(x.at.slice(0, 10))) + ' · ' + esc(x.by)) +
+      '<a class="lnk" href="' + esc(x.url) + '" target="_blank" rel="noopener" download="' + esc(x.name) + '" data-guide="customers-licenses-copy-open">Open full size</a></div>' +
+      (ro || !cur ? '' : '<div class="rowr">' + (S.lcRm === x.id ? '<button class="btn red" id="lc-rm" data-guide="customers-licenses-copy-remove-confirm">Remove this copy?</button>'
+        : '<button class="btn" id="lc-rm1" data-guide="customers-licenses-copy-remove">Remove</button>') + addBtn(k, 'Replace with a new copy', 'amber') + '</div>') +
+      (all.length > 1 ? '<div class="lcolds"><b>Copies on file · ' + all.length + '</b>' + all.map((y, i) => (i ? y : Object.assign({}, y, licNow))).map((y, i) => '<button class="lcrow' + (y.id === x.id ? ' on' : '') + '" data-lcold="' + y.id + '" data-guide="customers-licenses-copy-older">' +
+        '<span>' + (i ? 'Older' : 'Current') + ' · ' + esc(shortDate(y.at.slice(0, 10))) + '</span><em>' + esc(y.number || '') + (y.expires ? ' · ends ' + esc(shortDate(y.expires, true)) : '') + '</em></button>').join('') + '</div>' : '') +
+      '</aside>';
+  }
+  // A photo is shrunk to at most 1600 pixels on the phone before it goes up (a license is readable at that size).
+  function readCopy(file) {
+    return new Promise((res, rej) => {
+      if (!/^image\/|^application\/pdf$/.test(file.type || '')) return rej(new Error('Pick a photo or a PDF'));
+      if (file.size > 10 * 1024 * 1024) return rej(new Error('That file is bigger than 10 MB'));
+      const fr = new FileReader();
+      fr.onerror = () => rej(new Error('StoreOwl couldn’t read that file'));
+      fr.onload = () => {
+        const url = fr.result;
+        if (isPdf(file) || typeof document.createElement('canvas').getContext !== 'function') return res({ name: file.name, type: file.type, size: file.size, url });
+        const im = new Image();
+        im.onload = () => {
+          try {
+            const r = Math.min(1, 1600 / Math.max(im.width, im.height)), cv = document.createElement('canvas');
+            cv.width = Math.round(im.width * r); cv.height = Math.round(im.height * r);
+            const g = cv.getContext('2d'); if (!g) throw new Error('no canvas');
+            g.drawImage(im, 0, 0, cv.width, cv.height);
+            const out = cv.toDataURL('image/jpeg', 0.82);
+            res({ name: file.name.replace(/\.\w+$/, '') + '.jpg', type: 'image/jpeg', size: Math.round(out.length * 0.75), url: out });
+          } catch (e) { res({ name: file.name, type: file.type, size: file.size, url }); }
+        };
+        im.onerror = () => res({ name: file.name, type: file.type, size: file.size, url });
+        im.src = url;
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+
   function custLicHtml(c) {
     const S = A.cu, ro = !X.isMgr(), dis = ro ? ' disabled' : '', st = sets(), t = today();
     const dirty = JSON.stringify(S.led) !== S.lorig;
@@ -447,11 +509,12 @@ export function makeCatalog(X) {
       if (s === 'soon') return '<span class="st or"><i></i>Ends soon</span>';
       return '<span class="st"><i></i>Good</span>';
     };
-    return '<div class="cc"><table class="t tsm lic"><thead><tr><th>License</th><th>Number</th><th>Expires</th><th>Copy on file</th><th>Status</th></tr></thead><tbody>' +
+    return '<div class="cc"><table class="t tsm lic"><thead><tr><th>License</th><th>Number</th><th>Expires</th><th>Copy</th><th>Status</th></tr></thead><tbody>' +
       S.led.map((l, i) => '<tr><td><b>' + esc(licName(l.kind)) + '</b></td><td><input class="bx w" data-lk="' + i + '|number" value="' + esc(l.number) + '"' + dis + ' data-guide="customers-licenses-number"></td>' +
         '<td><input class="bx d" type="date" data-lk="' + i + '|expires" value="' + esc(l.expires) + '"' + dis + ' data-guide="customers-licenses-expires"></td>' +
-        '<td><label class="chk1 in"><input type="checkbox" data-lk="' + i + '|copy"' + (l.copy ? ' checked' : '') + dis + ' data-guide="customers-licenses-copy"> Yes</label></td>' +
+        '<td>' + copyCell(c, l.kind, ro) + '</td>' +
         '<td id="lst-' + i + '">' + stTxt(l) + '</td></tr>').join('') + '</tbody></table></div>' +
+      copyPanel(c, ro) +
       '<div class="cc"><div class="cch"><b>When a license runs out</b>' + (X.isMgr() ? '<button class="lnk" id="cu-licrules" data-guide="customers-licenses-rules">Change in Settings ›</button>' : '') + '</div><div class="ccb">' +
       '<div class="kv"><span>Tobacco license runs out</span><b>' + (st.tobacco_stop ? 'Stop tobacco on their invoices' : 'Only warn me') + '</b></div>' +
       '<div class="kv"><span>Remind me before a license ends</span><b>' + (st.remind_days ? st.remind_days + ' days' : 'Off') + '</b></div></div></div>' +
@@ -565,9 +628,27 @@ export function makeCatalog(X) {
       const set = () => { S.led[+i][k] = k === 'copy' ? el.checked : el.value; if (bar) bar.classList.toggle('hide', JSON.stringify(S.led) === S.lorig); };
       if (el.type === 'checkbox') el.onchange = set; else el.oninput = set;
     });
+    $$('[data-lcadd]').forEach((el) => { el.onchange = async () => {
+      const f = el.files && el.files[0], k = el.dataset.lcadd; if (!f) return;
+      S.lcBusy = k; X.render();
+      try {
+        const full = await db.copyAdd(A.cid, S.data.id, k, await readCopy(f));
+        S.lcBusy = null; S.lcv = k; S.lcid = null; S.lcRm = null; gotCust(full, true); X.say('✓ Copy of the ' + licName(k).toLowerCase() + ' saved');
+      } catch (e) { S.lcBusy = null; X.say(e.message, true); }
+      X.render();
+    }; });
+    $$('[data-lcview]').forEach((b) => { b.onclick = () => { S.lcv = S.lcv === b.dataset.lcview ? null : b.dataset.lcview; S.lcid = null; S.lcRm = null; X.render(); }; });
+    $$('[data-lcold]').forEach((b) => { b.onclick = () => { S.lcid = b.dataset.lcold; S.lcRm = null; X.render(); }; });
+    if (q('#lc-x')) q('#lc-x').onclick = () => { S.lcv = null; S.lcid = null; S.lcRm = null; X.render(); };
+    if (q('#lc-rm1')) q('#lc-rm1').onclick = () => { S.lcRm = (copiesOf(S.data, S.lcv)[0] || {}).id; X.render(); };
+    if (q('#lc-rm')) q('#lc-rm').onclick = async () => {
+      try { const full = await db.copyRemove(A.cid, S.data.id, S.lcRm); S.lcRm = null; S.lcid = null; gotCust(full, true); if (!copiesOf(full, S.lcv).length) S.lcv = null; X.say('Copy removed'); }
+      catch (e) { X.say(e.message, true); }
+      X.render();
+    };
     if (q('#cu-licrules')) q('#cu-licrules').onclick = () => { if (!leaveCust()) return; A.view = 'settings'; A.stab = 'licenses'; X.render(); };
     if (q('#cl-undo')) q('#cl-undo').onclick = () => { S.led = JSON.parse(S.lorig); S.err = ''; X.render(); };
-    if (q('#cl-save')) q('#cl-save').onclick = async () => {
+    const saveLic = async () => {
       const before = JSON.parse(S.lorig);
       const ch = S.led.filter((l, i) => JSON.stringify(l) !== JSON.stringify(before[i]));
       for (const l of ch) { if (l.expires && !/^\d{4}-\d{2}-\d{2}$/.test(l.expires)) { S.err = 'The date on ' + licName(l.kind) + ' doesn’t look right.'; return X.render(); } }
@@ -579,6 +660,8 @@ export function makeCatalog(X) {
       } catch (e) { S.err = e.message; }
       X.render();
     };
+    if (q('#cl-save')) q('#cl-save').onclick = saveLic;
+    if (q('#lc-save')) q('#lc-save').onclick = saveLic;
   }
 
   // =====================================================================

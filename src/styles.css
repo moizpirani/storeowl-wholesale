@@ -317,3 +317,28 @@ h2.mt{margin-top:18px}
 .match.off{flex-wrap:wrap}
 .match .why{flex-basis:100%;font-weight:500;color:var(--ink)}
 [data-imundo1],[data-imundo]{white-space:nowrap}
+/* License copies */
+.lcadd{position:relative;overflow:hidden;cursor:pointer}
+.lcadd input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.lcthumb{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:3px 10px 3px 3px;cursor:pointer;font:inherit;font-size:13px;color:var(--ink)}
+.lcthumb.on,.lcthumb:hover{border-color:var(--navy)}
+.lcthumb img,.lcthumb .pdf{width:44px;height:32px;object-fit:cover;border-radius:5px;background:#EEF1F5}
+.lcthumb .pdf{display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:700;color:var(--red)}
+.lcpan{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:100vw;background:#fff;border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(15,27,45,.12);z-index:30;display:flex;flex-direction:column;overflow:auto}
+.lchd{display:flex;align-items:center;justify-content:space-between;background:var(--navy);color:#fff;padding:14px 18px;font-size:15px}
+.lchd .x{background:none;border:0;color:#fff;font-size:18px;cursor:pointer}
+.lcpic{background:#EEF1F5;padding:14px;display:grid;place-items:center}
+.lcpic img{max-width:100%;max-height:52vh;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.lcpic iframe{width:100%;height:52vh;border:0;background:#fff}
+.lcinfo{padding:14px 18px 4px}
+.lcinfo .lnk{display:inline-block;margin:8px 0 4px}
+.lcold{margin:0 0 8px;color:var(--orange);font-weight:600;font-size:13px}
+.lcpan .rowr{padding:8px 18px 14px}
+.lcolds{border-top:1px solid var(--line);padding:12px 18px 18px;display:flex;flex-direction:column;gap:6px}
+.lcrow{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:9px 12px;font:inherit;font-size:13px;cursor:pointer;text-align:left}
+.lcrow.on{border-color:var(--navy);background:#F3F6FA}
+.lcrow em{font-style:normal;color:var(--muted)}
+.lcadd{display:inline-flex;align-items:center;justify-content:center;width:auto!important;white-space:nowrap}
+.lcedit{display:grid;grid-template-columns:1fr 150px auto;gap:10px;align-items:end;margin:4px 0 8px}
+.lcedit .fld{margin:0}
+.lcedit .bx{width:100%}
