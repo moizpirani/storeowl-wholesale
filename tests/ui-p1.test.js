@@ -180,10 +180,13 @@ test('bring in customers from a file, check the balances, take it back', async (
   if (!f.text) f.text = async () => csv;
   const inp = $('#im-file'); Object.defineProperty(inp, 'files', { value: [f] }); inp.dispatchEvent(new dom.window.Event('change'));
   await tick(6);
-  assert.equal(A.im.step, 'match'); assert.equal(A.im.kind, 'customers'); checkTags('import match');
-  assert.equal($('[data-immap="4"]').value, 'balance');
-  $('#im-check').click(); await tick(6);
-  assert.equal(A.im.step, 'check'); checkTags('import check');
+  // No Match columns page: every column was understood, so it goes straight to Check with one line.
+  assert.equal(A.im.step, 'check'); assert.equal(A.im.kind, 'customers'); checkTags('import check');
+  assert.match($('#app').textContent, /StoreOwl understood all 8 columns/);
+  assert.equal($('[data-immap]'), null);
+  $('#im-cols').click(); await tick();
+  assert.equal($('[data-immap="4"]').value, 'balance'); checkTags('import check columns');
+  $('#im-cols').click(); await tick();
   assert.match($('#app').textContent, /StoreOwl doesn’t know the terms “whenever”/);
   assert.match($('#app').textContent, /\$1,584\.40/);
   const old = $('#im-old'); type(old, '1,584.40');
@@ -200,4 +203,25 @@ test('bring in customers from a file, check the balances, take it back', async (
   $('[data-imundo]').click(); await tick(4);
   assert.equal(db.S.customers.length, 0);
   assert.match($('.toast').textContent, /Took back 2 customers/);
+});
+
+test('a column StoreOwl doesn’t know is the only one asked about', async () => {
+  const db = makeFake({ signedIn: 'owner@example.com' });
+  await db.createCompany({ name: 'Knox', home: 'TN' });
+  document.getElementById('app').innerHTML = '';
+  const A = startApp(document.getElementById('app'), db);
+  await tick();
+  $('[data-go="items"]').click(); await tick(4);
+  $('#it-import').click(); await tick(4);
+  const csv = 'Description,UPC,Shelf spot,Cost\nMARLBORO RED BOX CTN,28200003843,A4,71.10\n';
+  const f = new dom.window.File([csv], 'items.csv', { type: 'text/csv' });
+  if (!f.text) f.text = async () => csv;
+  const inp = $('#im-file'); Object.defineProperty(inp, 'files', { value: [f] }); inp.dispatchEvent(new dom.window.Event('change'));
+  await tick(6);
+  assert.equal(A.im.step, 'check');
+  assert.match($('#app').textContent, /StoreOwl didn’t know 1 column/);
+  assert.equal(document.querySelectorAll('.colsask [data-immap]').length, 1);
+  assert.match($('.colsask').textContent, /Shelf spot/);
+  assert.match($('#app').textContent, /understood 3 of 4 columns/);
+  checkTags('import check unknown');
 });

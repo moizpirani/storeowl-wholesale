@@ -317,3 +317,12 @@ h2.mt{margin-top:18px}
 .match.off{flex-wrap:wrap}
 .match .why{flex-basis:100%;font-weight:500;color:var(--ink)}
 [data-imundo1],[data-imundo]{white-space:nowrap}
+/* Bring in: columns on the Check page */
+.colsok{display:flex;align-items:center;gap:12px;background:#E6F4F1;color:var(--teal);font-weight:600;border-radius:10px;padding:12px 16px;margin:0 0 14px;font-size:14px}
+.colsok .lnk{margin-left:auto}
+.colsask{border-left:4px solid var(--orange);margin:0 0 14px}
+.colsask h2{color:var(--orange)}
+.colst td{vertical-align:middle}
+.colst td span.sm{display:block;margin-top:2px}
+.colst .sel{min-width:200px}
+.colsall{margin:0 0 14px}
