@@ -47,7 +47,7 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   app address with no `/**`; Redirect URLs = each address + `/**`; custom SMTP. Checking means signing in with an
   email that has never signed in before. **Email OTP Length = 6** (Sign In / Providers → Email; Supabase's
   default is now 8 and the screen has 6 boxes).
-- **Phase 1, part 1 (built 2026-11-26, Moiz approved the pictures, then "yes build it"; NOT pushed yet):** migration
+- **Phase 1, part 1 (built 2026-11-26, Moiz approved the pictures, then "yes build it"; ON TEST since 2026-11-26, branch `test`; not on `main`):** migration
   `phase1_items_customers_levels_2026_11_26` on the test database (every company got L1–L3).
   - **Price levels have private names** (Settings → Price levels, 1–6, default for new customers; a level with customers can't be
     taken off). **Never shown at a glance on a customer's page** (wholesalers open it in front of customers): only "Price level ••• Show",
