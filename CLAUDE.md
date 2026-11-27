@@ -173,3 +173,11 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   reason required): Invoices panel "Void this invoice…" (`iv-void` → `iv-vwhy`, `iv-vyes`) → `sale_void`: status 'void', `void_at / _by / _why`,
   kept, crossed out with a red Void tag, no longer counts in owes; prints with a VOID banner. `sales_list('posted')` includes void;
   `sale_last` invoices only. `dollars(v)` (rules.js) = −$78.40 for minus amounts. Tests: `credits`, `ui-credit`.
+- **Customer → Invoices & payments tab (built 2026-11-27, Moiz approved the pictures, then "put it on test"; migration
+  `customer_account_tab_2026_11_27` on the test database; ON TEST since 2026-11-26):** customer page tab `account` (after Overview,
+  `custAcctHtml` / `bindAcct`, state `A.cu.acc`): dates This month · Last month · Last 90 days · This year · Custom (`data-acpre`, custom =
+  `ac-from` / `ac-to` date boxes, change only); boxes Owed before · Invoices · Credit memos (+ "N void not counted") · Payments ("Come with
+  Payments", Phase 3) · Owes at the end; chips All / Invoices / Credit memos / Voids (`data-ack`), Find an invoice # (`ac-q`, filters rows in
+  place, never redraws); table oldest first with a starting row and a running "They owe"; voids crossed out with who / why, not counted. A row
+  (`data-acopen`) opens it on the Invoices page (`X.openInvoice` → `A.ivWant`). Database `customer_account(company, customer, from, to)`
+  (staff+, ≤ 2 years) = {before = opening + posted before from, opening, rows}. Payments join this list in Phase 3. Tests: `credits`, `ui-credit`.
