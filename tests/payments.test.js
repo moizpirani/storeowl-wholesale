@@ -28,6 +28,8 @@ test('payments: pay chosen invoices, store credit, credits used, post-dated chec
   const ff = await one(db, 'select item_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Seneca FF', category: 'cigarettes', sizes: [{ name: 'Carton', n: 10, prices: { 1: 30 } }] })]);
   const z = ff.sizes[0].id;
   const cu = await one(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'Clinton Hwy Market', level: 1, opening: 50, terms: 'net7' })]);
+  const nt = await one(db, 'select customer_put($1, $2::jsonb)', [cid, JSON.stringify({ name: 'No Terms Mart', level: 1 })]);
+  assert.equal((await one(db, "select terms from customers where name = 'No Terms Mart'")), '', 'terms are optional');
   const i1 = await save(db, cid, { customer_id: cu.id, action: 'complete', lines: [{ size_id: z, ordered: 3, shipped: 3 }] });   // 90
   const i2 = await save(db, cid, { customer_id: cu.id, action: 'complete', lines: [{ size_id: z, ordered: 2, shipped: 2 }] });   // 60
   await db.query("update sales set invoice_date = current_date - 40 where id = $1", [i1.id]);
@@ -109,4 +111,8 @@ test('a statement: start, every line with a running balance, voids left out, agi
   const m = buildStatementMail(co, cust, acct, '2026-11-01', '2026-11-30');
   assert.equal(m.to, 'store@example.com'); assert.equal(m.mail.attachments[0].contentType, 'application/pdf');
   assert.match(buildStatementMail(co, { name: 'X' }, acct, '2026-11-01', '2026-11-30').err, /no email/);
+  // No terms: nothing about terms on the statement, the due date is the invoice date.
+  const N = stmtModel({ co, cust: Object.assign({}, cust, { terms: '' }), acct, from: '2026-11-01', to: '2026-11-30', today: '2026-11-27' });
+  assert.equal(N.terms, ''); assert.equal(N.lines[0].due, '2026-11-03');
+  assert.ok(!/Terms/.test(stmtHtml(N))); assert.ok(!/Terms/.test(stmtEmailText(N, co).text)); assert.ok(stmtPdf(N).bytes.length > 800);
 });

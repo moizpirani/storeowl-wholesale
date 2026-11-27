@@ -330,7 +330,7 @@ create table if not exists customers (
   zip text not null default '',
   contacts jsonb not null default '[]'::jsonb,   -- [{name, role, phone}]
   level int not null default 1,
-  terms text not null default 'cod' check (terms in ('cod','advance','net7','net10','net14','net30')),
+  terms text not null default '' check (terms in ('','cod','advance','net7','net10','net14','net30')),
   credit_limit numeric(12,2),
   tobacco boolean not null default true,          -- buys tobacco (then a tobacco license is needed)
   delivery text not null default '',
@@ -776,7 +776,7 @@ begin
         left(trim(coalesce(r->>'addr','')),160), left(trim(coalesce(r->>'city','')),80), coalesce(_clean_state(r->>'state'),''), left(trim(coalesce(r->>'zip','')),12),
         coalesce((select jsonb_agg(jsonb_build_object('name', left(trim(coalesce(x->>'name','')),80), 'role', left(trim(coalesce(x->>'role','')),40), 'phone', left(trim(coalesce(x->>'phone','')),40)))
           from jsonb_array_elements(coalesce(r->'contacts','[]'::jsonb)) x where trim(coalesce(x->>'name','')) <> ''), '[]'::jsonb),
-        lv, case when r->>'terms' in ('cod','advance','net7','net10','net14','net30') then r->>'terms' else 'cod' end,
+        lv, case when r->>'terms' in ('cod','advance','net7','net10','net14','net30') then r->>'terms' else '' end,
         case when _num(r->'credit_limit') >= 0 then _num(r->'credit_limit') end, coalesce(_num(r->'opening'),0), current_date, p_import)
       returning id into cid;
     for l in select * from jsonb_array_elements(coalesce(r->'licenses','[]'::jsonb)) loop
@@ -2042,3 +2042,9 @@ begin
 end $$;
 revoke execute on function statement_sent(uuid,uuid,jsonb) from public, anon;
 grant execute on function statement_sent(uuid,uuid,jsonb) to authenticated;
+
+-- ---------------------------------------------------------------------------------------------
+-- Payment terms are optional (2026-11-27, Moiz). '' = no terms: due on the invoice date.
+alter table customers drop constraint if exists customers_terms_check;
+alter table customers add constraint customers_terms_check check (terms in ('','cod','advance','net7','net10','net14','net30'));
+alter table customers alter column terms set default '';

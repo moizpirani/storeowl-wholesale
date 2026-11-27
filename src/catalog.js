@@ -427,7 +427,7 @@ export function makeCatalog(X) {
       const iss = custIssues(c, sets(), today(), home()), res = (c.licenses || []).find((l) => l.kind === 'resale');
       return '<tr data-curow="' + c.id + '"><td><button class="nmb" data-cuopen="' + c.id + '" data-guide="customers-list-open"><i class="d' + (iss.length ? (iss.some((x) => x.tone === 'red') ? ' red' : '') : ' no') + '"></i><b>' + esc(c.name) + '</b></button>' +
         '<span class="sub">' + esc([c.store_no ? 'Store #' + c.store_no : '', c.city].filter(Boolean).join(' · ')) + '</span></td>' +
-        '<td class="mut">' + esc(termName(c.terms)) + '</td><td class="mut">' + (res ? esc(res.number) : '<span class="bad">Missing</span>') + '</td>' +
+        '<td class="mut">' + esc(termName(c.terms) || '—') + '</td><td class="mut">' + (res ? esc(res.number) : '<span class="bad">Missing</span>') + '</td>' +
         '<td class="n">' + money$(c.owes || 0) + '</td><td class="n mut">' + (c.credit_limit != null ? money$(c.credit_limit) : '—') + '</td><td>' + statusHtml(c) + '</td></tr>';
     }).join('') + (list.length > A.cu.more ? '<tr><td colspan="6" class="empty"><button class="btn sm" id="cu-more" data-guide="customers-list-more">Show more</button></td></tr>' : '');
   }
@@ -473,7 +473,7 @@ export function makeCatalog(X) {
     const d = {};
     CU_KEYS.forEach((k) => { d[k] = c && c[k] != null ? (k === 'credit_limit' || k === 'opening' ? String(Number(c[k]) || (k === 'opening' ? '0' : c[k])) : c[k]) : ''; });
     if (!c) d.opening = '0';
-    if (!c) { d.level = sets().default_level; d.terms = 'cod'; d.tobacco = true; d.active = true; d.state = (co() || {}).home || ''; }
+    if (!c) { d.level = sets().default_level; d.terms = ''; d.tobacco = true; d.active = true; d.state = (co() || {}).home || ''; }
     d.contacts = c ? copy(c.contacts || []) : [{ name: '', role: 'Owner', phone: '' }];
     d.gets = c && c.gets ? copy(c.gets) : {};
     return d;
@@ -531,7 +531,7 @@ export function makeCatalog(X) {
     const kpis = '<div class="kpis"><div class="kb nv"><span>Owes</span><b>' + money$(c.owes || 0) + '</b><small>' + esc(owesSub) + '</small></div>' +
       '<div class="kb"><span>Past due · ' + (OI ? money$(OI.past_due) : '…') + '</span><div class="age"><div>1–30 days<b' + (ag && ag.d30 ? ' class="miss"' : '') + '>' + w(ag ? ag.d30 : 0) + '</b></div><div>31–60<b' + (ag && ag.d60 ? ' class="miss"' : '') + '>' + w(ag ? ag.d60 : 0) + '</b></div><div>61–90<b' + (ag && ag.d90 ? ' class="bad"' : '') + '>' + w(ag ? ag.d90 : 0) + '</b></div><div>90+<b' + (ag && ag.over ? ' class="bad"' : '') + '>' + w(ag ? ag.over : 0) + '</b></div></div></div>' +
       '<div class="kb"><span>Credit limit</span><b>' + (c.credit_limit != null ? money$(c.credit_limit) : 'None') + '</b>' + (c.credit_limit ? '<div class="cbar"><i style="width:' + used + '%"></i></div><small>' + used + '% used · ' + money$(c.credit_limit - (c.owes || 0)) + ' left</small>' : '<small>No limit set</small>') + '</div>' +
-      '<div class="kb"><span>Terms</span><b class="smb2">' + esc(termName(c.terms)) + '</b><small>' + (licProblems(c, st, today(), home()).length ? '<span class="miss">A license needs a look</span>' : 'Licenses OK') + '</small></div>' +
+      '<div class="kb"><span>Terms</span><b class="smb2">' + esc(termName(c.terms) || 'No terms') + '</b><small>' + (licProblems(c, st, today(), home()).length ? '<span class="miss">A license needs a look</span>' : 'Licenses OK') + '</small></div>' +
       '<div class="kb"><span>Buys a week</span><b>—</b><small>No orders yet</small></div></div>';
     const licBad = iss.filter((x) => x.k !== 'credit').length;
     const nN = (c.notes || []).length;
@@ -608,7 +608,7 @@ export function makeCatalog(X) {
       '<div class="grid2 tight">' + sel('State', 'state', stateOptions(d.state, ' ')) + inp('ZIP', 'zip', ' inputmode="numeric"') + '</div></div>' +
       '<h2>Contacts</h2>' + contacts + '</div>' +
       '<div class="card form2"><h2>Selling to them</h2><div class="grid2">' +
-      sel('Price level', 'level', levels().map((l) => opt(l.n, l.name, +d.level === l.n)).join('')) + sel('Terms', 'terms', TERMS.map((t) => opt(t[0], t[1], t[0] === d.terms)).join('')) +
+      sel('Price level', 'level', levels().map((l) => opt(l.n, l.name, +d.level === l.n)).join('')) + sel('Terms (optional)', 'terms', opt('', 'No terms', !d.terms) + TERMS.map((t) => opt(t[0], t[1], t[0] === d.terms)).join('')) +
       inp('Credit limit', 'credit_limit', ' inputmode="decimal" placeholder="No limit"') + sel('Buys tobacco', 'tobacco', opt('true', 'Yes', d.tobacco !== false) + opt('false', 'No', d.tobacco === false)) +
       inp('Delivery day', 'delivery', ' list="days"') + inp('Route', 'route') + inp('Sales rep', 'rep') + inp('Customer since', 'since', ' type="date"') +
       inp('Ships to', 'ship_to', ' placeholder="Same as the store"', 'span2') +

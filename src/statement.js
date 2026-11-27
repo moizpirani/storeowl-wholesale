@@ -52,7 +52,7 @@ export function stmtHtml(M) {
     '<div class="iv-ino">STATEMENT<b>' + esc(shortDate(M.from, true)) + ' – ' + esc(shortDate(M.to, true)) + '</b>Made ' + esc(shortDate(M.made, true)) + '</div></div>';
   const pp = '<div class="iv-pp"><div><small>Statement for</small><b>' + esc(M.buyer.name) + '</b>' + (M.buyer.store_no ? ' · Store #' + esc(M.buyer.store_no) : '') +
     M.buyer.lines.map((x) => '<div>' + esc(x) + '</div>').join('') + (M.buyer.acct_no ? '<div>Customer # ' + esc(M.buyer.acct_no) + '</div>' : '') + '</div>' +
-    '<div><small>Terms</small><b>' + esc(M.terms) + '</b></div><div><small>You owe now</small><b style="font-size:16px">' + $(M.end) + '</b>' +
+    (M.terms ? '<div><small>Terms</small><b>' + esc(M.terms) + '</b></div>' : '<div></div>') + '<div><small>You owe now</small><b style="font-size:16px">' + $(M.end) + '</b>' +
     (M.past_due > 0 ? '<div>' + $(M.past_due) + ' is past due</div>' : '') + '</div></div>';
   const th = '<tr><th>Date</th><th>What</th><th>#</th><th>Due</th><th class="iv-n">Charges</th><th class="iv-n">Credits &amp; payments</th><th class="iv-n">Balance</th></tr>';
   const rows = '<tr class="iv-cat"><td>' + esc(shortDate(M.from, true)) + '</td><td colspan="5">You owed at the start</td><td class="iv-n">' + $(M.before) + '</td></tr>' +
@@ -87,7 +87,7 @@ export function stmtPdf(M) {
   let yy = y; d.text(L, yy, 'STATEMENT FOR', { size: 7, bold: true, color: MUT }); yy += 11;
   [M.buyer.name + (M.buyer.store_no ? ' · Store #' + M.buyer.store_no : '')].concat(M.buyer.lines, M.buyer.acct_no ? ['Customer # ' + M.buyer.acct_no] : [])
     .forEach((t, k) => { d.text(L, yy, fit(t, 9, 250, k === 0), { size: 9, bold: k === 0 }); yy += 11; });
-  d.text(320, y, 'TERMS', { size: 7, bold: true, color: MUT }); d.text(320, y + 11, M.terms, { size: 9, bold: true });
+  if (M.terms) { d.text(320, y, 'TERMS', { size: 7, bold: true, color: MUT }); d.text(320, y + 11, M.terms, { size: 9, bold: true }); }
   d.text(R, y, 'YOU OWE NOW', { size: 7, bold: true, color: MUT, align: 'right' }); d.text(R, y + 15, $(M.end), { size: 15, bold: true, align: 'right' });
   if (M.past_due > 0) d.text(R, y + 27, $(M.past_due) + ' is past due', { size: 8.5, color: '#B4570A', align: 'right' });
   y = Math.max(yy, y + 34) + 8; tableHead();
@@ -124,5 +124,5 @@ export const stmtName = (M) => 'Statement-' + String(M.buyer.name || 'Store').re
 export function stmtEmailText(M, co) {
   return { subject: co.name + ' · Statement ' + shortDate(M.from, true) + ' – ' + shortDate(M.to, true) + ' · You owe ' + $(M.end),
     text: 'Hello ' + M.buyer.name + ',\n\nYour statement from ' + co.name + ' is attached.\n\nYou owe now: ' + $(M.end) + (M.past_due > 0 ? '\nPast due: ' + $(M.past_due) : '') +
-      '\nTerms: ' + M.terms + '\n\nQuestions? Reply to this email.\n\n' + co.name + (co.phone ? '\n' + co.phone : '') };
+      (M.terms ? '\nTerms: ' + M.terms : '') + '\n\nQuestions? Reply to this email.\n\n' + co.name + (co.phone ? '\n' + co.phone : '') };
 }

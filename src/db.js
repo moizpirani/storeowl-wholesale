@@ -372,7 +372,7 @@ export function makeFake(opts) {
       const before = c ? copy(c) : null;
       if (!c) {
         c = { id: id(), company_id: cid, name: '', store_no: '', phone: '', email: '', edi_email: '', acct_no: '', gets: {}, addr: '', city: '', state: '', zip: '', contacts: [],
-          level: Object.assign({}, DEFAULT_SETTINGS, co.settings).default_level, terms: 'cod', credit_limit: null, tobacco: true, delivery: '', route: '', rep: '',
+          level: Object.assign({}, DEFAULT_SETTINGS, co.settings).default_level, terms: '', credit_limit: null, tobacco: true, delivery: '', route: '', rep: '',
           ship_to: '', since: null, active: true, licenses: [], opening: 0, opening_as_of: null, created_at: new Date().toISOString() };
         S.customers.push(c);
       }
@@ -458,7 +458,7 @@ export function makeFake(opts) {
         if (!r.name || S.customers.some((c) => c.company_id === cid && key(c.name, c.store_no) === key(r.name, r.store_no))) { skipped++; continue; }
         const lv = co.levels.some((l) => l.n === r.level) ? r.level : Object.assign({}, DEFAULT_SETTINGS, co.settings).default_level;
         S.customers.push({ id: id(), company_id: cid, import_id: imp, name: r.name.trim(), store_no: r.store_no || '', phone: r.phone || '', email: r.email || '', addr: r.addr || '',
-          city: r.city || '', state: r.state || '', zip: r.zip || '', contacts: r.contacts || [], level: lv, terms: r.terms || 'cod', credit_limit: r.credit_limit == null ? null : r.credit_limit,
+          city: r.city || '', state: r.state || '', zip: r.zip || '', contacts: r.contacts || [], level: lv, terms: r.terms || '', credit_limit: r.credit_limit == null ? null : r.credit_limit,
           tobacco: true, delivery: '', route: '', rep: '', ship_to: '', since: null, active: true, opening: r.opening || 0, opening_as_of: new Date().toISOString().slice(0, 10),
           licenses: (r.licenses || []).map((l) => ({ kind: l.kind, number: l.number, expires: l.expires || null, copy: false })), created_at: new Date().toISOString() });
         balance += r.opening || 0; added++;

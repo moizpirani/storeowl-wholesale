@@ -133,7 +133,7 @@ export function invoiceHtml(M) {
   const buyer = '<div><small>Sold to</small><b>' + esc(M.buyer.name) + '</b>' + (M.buyer.store_no ? ' · Store #' + esc(M.buyer.store_no) : '') +
     M.buyer.lines.map((x) => '<div>' + esc(x) + '</div>').join('') + (M.buyer.ship_to ? '<div>Ships to: ' + esc(M.buyer.ship_to) + '</div>' : '') + '</div>';
   const lic = '<div><small>Store licenses on file</small>' + (M.buyer.lic.length ? M.buyer.lic.map((l) => '<div>' + esc(l.name) + ' ' + esc(l.number) + (l.expires ? ' · ends ' + esc(shortDate(l.expires, true)) : '') + '</div>').join('') : '<div>None on file</div>') + '</div>';
-  const terms = '<div><small>Terms</small><b>' + esc(M.terms) + '</b><div>' + (M.kind === 'credit' ? 'Credited to account' : 'Charged to account') + '</div><small style="margin-top:4px">Sold by</small>' + esc(M.soldBy || '—') + '</div>';
+  const terms = '<div>' + (M.terms ? '<small>Terms</small><b>' + esc(M.terms) + '</b>' : '') + '<div>' + (M.kind === 'credit' ? 'Credited to account' : 'Charged to account') + '</div><small style="margin-top:4px">Sold by</small>' + esc(M.soldBy || '—') + '</div>';
   const ph = M.show.photos && M.lines.some((l) => l.photo_url), bc = M.show.barcodes;
   const th = '<tr>' + (ph ? '<th style="width:30px"></th>' : '') + '<th>Item</th><th>Item #</th><th>UPC</th><th>Size</th>' + (M.kind === 'credit' ? '<th class="iv-n">Came back</th><th>Why</th>' : '<th class="iv-n">Ordered</th><th class="iv-n">Shipped</th>') + '<th class="iv-n">Price</th><th class="iv-n">Amount</th></tr>';
   const cols = 8 + (ph ? 1 : 0);
@@ -180,7 +180,7 @@ export function invoicePdf(M) {
     rows.forEach((t, k) => { d.text(bx[i], yy, fit(t, 9, boxW, k === 0), { size: 9, bold: k === 0 }); yy += 11; }); return yy; };
   const b1 = box(0, 'Sold to', [M.buyer.name + (M.buyer.store_no ? ' · Store #' + M.buyer.store_no : '')].concat(M.buyer.lines, M.buyer.ship_to ? ['Ships to: ' + M.buyer.ship_to] : []));
   const b2 = box(1, 'Store licenses on file', M.buyer.lic.length ? M.buyer.lic.map((l) => l.name + ' ' + l.number) : ['None on file']);
-  const b3 = box(2, 'Terms', [M.terms, CR ? 'Credited to account' : 'Charged to account', 'Sold by ' + (M.soldBy || '—')]);
+  const b3 = box(2, M.terms ? 'Terms' : 'Account', [M.terms, CR ? 'Credited to account' : 'Charged to account', 'Sold by ' + (M.soldBy || '—')].filter(Boolean));
   y = Math.max(b1, b2, b3) + 8; tableHead();
   M.groups.forEach((g) => {
     room(30); d.rect(L, y - 9, R - L, 13, '#EEF2F7'); d.text(L + 4, y, g.name, { size: 8.5, bold: true }); y += 14;
@@ -290,6 +290,6 @@ export function invEmailText(kind, M, co) {
   if (kind === 'edi') return { subject: '', text: W + ' #' + M.num + ' from ' + co.name + ' as an EDI file for your back office.\n\n' + 'Total: ' + $(M.sums.total) + '\n\nQuestions? Reply to this email.' };
   return { subject: co.name + ' · ' + W + ' #' + M.num + ' · ' + $(M.sums.total),
     text: 'Hello ' + M.buyer.name + ',\n\nYour ' + w + ' #' + M.num + ' from ' + co.name + ' is attached.\n\n' + W + ' total: ' + $(M.sums.total) +
-      (M.owes ? '\nYou owe now: ' + $(M.owes.now) : '') + '\nTerms: ' + M.terms + (cr ? ' · credited to your account' : ' · charged to account') + '\n\nQuestions? Reply to this email.\n\n' + co.name +
+      (M.owes ? '\nYou owe now: ' + $(M.owes.now) : '') + '\n' + (M.terms ? 'Terms: ' + M.terms + ' · ' : '') + (cr ? 'Credited to your account' : 'Charged to your account') + '\n\nQuestions? Reply to this email.\n\n' + co.name +
       (co.phone ? '\n' + co.phone : '') };
 }

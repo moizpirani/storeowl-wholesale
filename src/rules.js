@@ -8,7 +8,7 @@ export const catName = (k) => (CATEGORIES.find((c) => c[0] === k) || [k, 'Grocer
 export const SIZE_NAMES = ['Pack', 'Carton', 'Case', 'Box', 'Can', 'Roll', 'Each', 'Bottle', 'Bag', 'Tin', 'Sleeve', 'Pouch', 'Display'];
 
 export const TERMS = [['cod', 'Cash or check on delivery'], ['advance', 'Pay in advance'], ['net7', 'Net 7'], ['net10', 'Net 10'], ['net14', 'Net 14'], ['net30', 'Net 30']];
-export const termName = (k) => (TERMS.find((t) => t[0] === k) || ['', '—'])[1];
+export const termName = (k) => (TERMS.find((t) => t[0] === k) || ['', ''])[1];  // '' = no terms
 
 export const LICENSES = [
   ['resale', 'Resale certificate'], ['location', 'State location number'], ['tobacco', 'Tobacco license'],
