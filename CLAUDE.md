@@ -181,3 +181,15 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   place, never redraws); table oldest first with a starting row and a running "They owe"; voids crossed out with who / why, not counted. A row
   (`data-acopen`) opens it on the Invoices page (`X.openInvoice` → `A.ivWant`). Database `customer_account(company, customer, from, to)`
   (staff+, ≤ 2 years) = {before = opening + posted before from, opening, rows}. Payments join this list in Phase 3. Tests: `credits`, `ui-credit`.
+- **Phase 3, part 1 = payments, store credit, post-dated checks, deposit, statements + optional terms (built 2026-11-27, Moiz:
+  "yes to payments", "make the term optional", then "put it on test"; migration `phase3_payments_statements_optional_terms_2026_11_27`
+  on the test database; ON TEST since 2026-11-27):** `src/payments.js` = the Take a payment window (customer, how they paid, check # /
+  date, amount, Pays these oldest first, use store credit; from the Counter "Paid now" after Complete sale) and the Payments page (list ·
+  Post-dated checks · Deposit day, void with a reason, managers+). A check dated later than today is held: pays nothing until Deposited on
+  or after its date. Money left over = store credit; credit memos can pay invoices. Owes = starting balance + posted invoices and credits −
+  posted payments; aging by due date = invoice date + terms days. Database: `payments`, `pay_applies` (from a payment or credit memo, to an
+  invoice or the starting balance), `_applies_live`, `_open_items`, `customer_open`, `payment_save` / `_deposit` / `_void`, `payments_list`,
+  `customer_account` now lists payments, `statement_sent`. Statements (`src/statement.js`): customer → Invoices & payments → Statement
+  (print / PDF / email through `api/send.js` `{statement}`). **Terms are optional:** `terms = ''` = No terms (the form's first choice and
+  the default; import leaves missing terms blank), due on the invoice date, nothing about terms on invoices / statements / emails.
+  Tests: `payments`, `ui-payments`.
