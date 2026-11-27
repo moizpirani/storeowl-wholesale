@@ -569,7 +569,7 @@ export function makeCounter(X) {
       '<p class="sm">' + esc(sel.customer.name) + ' · ' + esc(shortDate(sel.invoice_date, true)) + ' · ' + (cr ? 'credited to account' : 'charged to account') + '</p>' + voidBox +
       '<table class="t"><tbody>' + sel.lines.map((l) => '<tr><td><b>' + esc(l.name) + '</b><small>' + lineSub(l) + '</small></td><td class="n">' + (l.other ? '' : Math.abs(l.shipped) + ' × ') + $(l.unit_price) + '</td><td class="n"><b>' + $(l.total) + '</b></td></tr>').join('') +
       '<tr><td><b>Total</b></td><td></td><td class="n"><b>' + $(sel.total) + '</b></td></tr></tbody></table>' +
-      (sel.lic_reason ? '<p class="sm">Licenses at the time: ' + esc(String(sel.lic_reason).replace(/^Sold with: /, '')) + '</p>' : '') + iv.panelHtml(sel) + voidAsk + '</aside>' : '';
+      (sel.lic_reason ? '<p class="sm">Licenses at the time: ' + esc(String(sel.lic_reason).replace(/^Sold with: /, '')) + '</p>' : '') + voidAsk + iv.panelHtml(sel) + '</aside>' : '';
     return '<div class="hdr"><h1>Invoices<span class="count">' + I.list.length + '</span></h1></div>' +
       '<div class="bar"><input class="inp q" id="iv-q" type="search" placeholder="Invoice #, customer or date (2026-11-27)" value="' + esc(I.q) + '" data-guide="invoices-list-search"></div>' +
       (sel ? '<div class="wrap2">' + table + panel + '</div>' : table);
