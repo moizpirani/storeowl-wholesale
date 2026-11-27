@@ -69,8 +69,10 @@ test('sign in → set up a company → Home → Settings', async () => {
   assert.deepEqual(db.S.companies[0].others, ['KY']);
 
   // Unbuilt pages say which phase brings them.
-  $('[data-go="counter"]').click(); await tick();
-  assert.match($('#app').textContent, /Phase 2/); checkTags('counter (not built)');
+  $('[data-go="payments"]').click(); await tick();
+  assert.match($('#app').textContent, /Phase 3/); checkTags('payments (not built)');
+  $('[data-go="counter"]').click(); await tick(); await tick();
+  assert.match($('#app').textContent, /New sale/); checkTags('counter');
 
   // Settings → Company: the save bar shows only after a change.
   $('[data-go="settings"]').click(); await tick();

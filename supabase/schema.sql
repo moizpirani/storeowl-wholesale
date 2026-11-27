@@ -1098,3 +1098,256 @@ begin
     jsonb_build_object('item', iid, 'name', trim(p->>'name'), 'before', before));
   return _item_json(iid, true);
 end $$;
+
+-- =====================================================================
+-- Phase 2, piece 1: the Counter (2026-11-26). A sale is one row in `sales`:
+--   suspended (set aside, finish by closing) · review (sent for an owner / manager to finish) · posted (an invoice) · cancelled.
+-- Prices are worked out HERE from the items, the customer's level and quantity breaks (the app shows the same numbers,
+-- src/rules.js priceSale), so a sale can't be posted at a made-up price. Invoice numbers come from companies.next_invoice.
+-- A sale sent for review keeps the day it was sent as its invoice date; a suspended one is dated the day it's completed.
+-- =====================================================================
+alter table companies add column if not exists next_invoice int not null default 1001;
+
+create table if not exists sales (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  customer_id uuid not null references customers(id),
+  status text not null check (status in ('suspended','review','posted','cancelled')),
+  number int,
+  lines jsonb not null default '[]'::jsonb,
+  total numeric(12,2) not null default 0,
+  units int not null default 0,
+  why text not null default '',
+  lic_reason text not null default '',
+  by_name text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  sent_at timestamptz,
+  posted_at timestamptz,
+  posted_by text not null default '',
+  invoice_date date,
+  unique (company_id, number)
+);
+create index if not exists sales_company on sales(company_id, status, created_at desc);
+create index if not exists sales_customer on sales(customer_id, status, created_at desc);
+alter table sales enable row level security;
+revoke all on sales from anon, authenticated;
+
+-- Barcodes scanned at the counter that no item has, for an owner / manager to add.
+create table if not exists unknown_upcs (
+  company_id uuid not null references companies(id) on delete cascade,
+  upc text not null check (upc ~ '^[0-9]{6,14}$'),
+  times int not null default 0,
+  first_at timestamptz not null default now(),
+  last_at timestamptz not null default now(),
+  last_by text not null default '',
+  sold_as uuid references items(id) on delete set null,
+  sold_by text not null default '',
+  status text not null default 'open' check (status in ('open','added','ignored')),
+  primary key (company_id, upc)
+);
+alter table unknown_upcs enable row level security;
+revoke all on unknown_upcs from anon, authenticated;
+
+create or replace function _my_name(p_company uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce((select nullif(m.name,'') from company_members m where m.company_id = p_company and m.user_id = auth.uid()), _my_email(), '') $$;
+
+-- Price the lines for a level: [{size_id, ordered, shipped}] → {lines:[…], total, units}.
+create or replace function _sale_price(p_company uuid, p_level int, p_lines jsonb) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r jsonb; n_in int; n_ok int;
+begin
+  n_in := jsonb_array_length(coalesce(p_lines, '[]'::jsonb));
+  with l as (
+    select t.ord, (t.x->>'size_id')::uuid sid,
+      greatest(coalesce((t.x->>'ordered')::int, 0), 0) ordered, greatest(coalesce((t.x->>'shipped')::int, 0), 0) shipped
+    from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) with ordinality t(x, ord)),
+  j as (
+    select l.*, z.name zname, z.n zn, z.upc, z.prices, z.breaks, i.id iid, i.name iname, i.category, i.unit,
+      case when trim(i.break_group) <> '' then 'g:' || lower(trim(i.break_group)) || '|' || lower(trim(z.name)) else 's:' || z.id::text end gk
+    from l join item_sizes z on z.id = l.sid and z.company_id = p_company join items i on i.id = z.item_id),
+  g as (select gk, sum(shipped) gq from j group by gk),
+  p as (
+    select j.*, g.gq, _num(j.prices -> (p_level::text)) price,
+      coalesce((select max(_num(b->'off')) from jsonb_array_elements(j.breaks) b where (b->>'min')::int <= g.gq), 0) off
+    from j join g using (gk)),
+  q as (select p.*, round(p.price - p.off, 2) unit_price from p)
+  select jsonb_build_object(
+    'lines', coalesce(jsonb_agg(jsonb_build_object('size_id', sid, 'item_id', iid, 'name', iname, 'size', zname, 'n', zn, 'unit_name', unit, 'upc', upc,
+      'category', category, 'ordered', ordered, 'shipped', shipped, 'price', price, 'off', off, 'unit_price', unit_price,
+      'total', round(unit_price * shipped, 2), 'group_qty', gq) order by ord), '[]'::jsonb),
+    'total', coalesce(sum(round(unit_price * shipped, 2)), 0), 'units', coalesce(sum(shipped), 0), 'n', count(*),
+    'noprice', (select iname || ' (' || zname || ')' from q q2 where q2.price is null limit 1))
+  into r from q;
+  if (r->>'n')::int <> n_in then raise exception 'an item on this sale isn''t in your list any more'; end if;
+  if r->>'noprice' is not null then raise exception '% has no price for this customer''s level', r->>'noprice'; end if;
+  return r;
+end $$;
+
+create or replace function _sale_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(s) - 'company_id' || jsonb_build_object('customer', jsonb_build_object('id', c.id, 'name', c.name, 'store_no', c.store_no, 'city', c.city, 'level', c.level, 'terms', c.terms))
+  from sales s join customers c on c.id = s.customer_id where s.id = p_id $$;
+
+-- Save a sale. p = {id?, customer_id, lines:[{size_id, ordered, shipped}], action: suspend|review|complete|cancel, why?, lic_reason?}
+-- Staff ring up, suspend, send for review and complete; only owners / managers touch a sale that's in review.
+create or replace function sale_save(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r text := _need(p_company, 'staff'); act text := p->>'action'; s sales; cust customers; pr jsonb; num int; sid uuid; who text := _my_name(p_company);
+begin
+  if act not in ('suspend','review','complete','cancel') then raise exception 'unknown action'; end if;
+  sid := nullif(p->>'id','')::uuid;
+  if sid is not null then
+    select * into s from sales where id = sid and company_id = p_company for update;
+    if s.id is null then raise exception 'sale not found'; end if;
+    if s.status not in ('suspended','review') then raise exception 'this sale is already %', case s.status when 'posted' then 'an invoice' else 'cancelled' end; end if;
+    if s.status = 'review' and r = 'staff' then raise exception 'an owner or manager finishes sales sent for review'; end if;
+  end if;
+  if act = 'cancel' then
+    if s.id is null then raise exception 'nothing to cancel'; end if;
+    update sales set status = 'cancelled', updated_at = now() where id = s.id;
+    perform _log(p_company, 'sale cancelled', jsonb_build_object('sale', s.id, 'customer', s.customer_id, 'was', s.status, 'total', s.total));
+    return _sale_json(s.id);
+  end if;
+  select * into cust from customers where id = coalesce(nullif(p->>'customer_id','')::uuid, s.customer_id) and company_id = p_company;
+  if cust.id is null then raise exception 'pick a customer'; end if;
+  if jsonb_array_length(coalesce(p->'lines','[]'::jsonb)) = 0 then raise exception 'scan at least one item'; end if;
+  pr := _sale_price(p_company, cust.level, p->'lines');
+  if act = 'complete' and (pr->>'units')::int = 0 then raise exception 'nothing is shipped on this sale'; end if;
+  if act = 'review' and length(trim(coalesce(p->>'why',''))) = 0 then raise exception 'say what the manager should check'; end if;
+  if s.id is null then
+    insert into sales(company_id, customer_id, status, by_name) values (p_company, cust.id, 'suspended', who) returning * into s;
+  end if;
+  update sales set customer_id = cust.id, lines = pr->'lines', total = (pr->>'total')::numeric, units = (pr->>'units')::int, updated_at = now(),
+    lic_reason = left(coalesce(nullif(trim(p->>'lic_reason'),''), lic_reason), 200) where id = s.id;
+  if act = 'suspend' then
+    update sales set status = 'suspended' where id = s.id;
+    perform _log(p_company, 'sale suspended', jsonb_build_object('sale', s.id, 'customer', cust.id, 'total', pr->'total'));
+  elsif act = 'review' then
+    update sales set status = 'review', why = left(trim(p->>'why'), 300), sent_at = now() where id = s.id;
+    perform _log(p_company, 'sale sent for review', jsonb_build_object('sale', s.id, 'customer', cust.id, 'why', trim(p->>'why'), 'total', pr->'total'));
+  else
+    update companies set next_invoice = next_invoice + 1 where id = p_company returning next_invoice - 1 into num;
+    update sales set status = 'posted', number = num, posted_at = now(), posted_by = who,
+      invoice_date = case when s.status = 'review' then coalesce(s.sent_at, now())::date else current_date end where id = s.id;
+    perform _log(p_company, 'invoice posted', jsonb_build_object('sale', s.id, 'number', num, 'customer', cust.id, 'total', pr->'total',
+      'license_reason', nullif(trim(coalesce(p->>'lic_reason','')),'')));
+  end if;
+  return _sale_json(s.id);
+end $$;
+
+-- Lists: suspended (everyone), review (owners / managers), posted (everyone, newest first).
+create or replace function sales_list(p_company uuid, p_status text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r text := _need(p_company, 'staff');
+begin
+  if p_status not in ('suspended','review','posted') then raise exception 'unknown list'; end if;
+  if p_status = 'review' and r = 'staff' then raise exception 'only owners and managers see sales sent for review'; end if;
+  return coalesce((select jsonb_agg(j order by (j->>'created_at') desc) from (
+    select _sale_json(id) j from sales where company_id = p_company and status = p_status
+    order by created_at desc limit case when p_status = 'posted' then 300 else 1000 end) x), '[]'::jsonb);
+end $$;
+
+-- The last invoice's lines for a customer (Repeat last order).
+create or replace function sale_last(p_company uuid, p_customer uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return (select _sale_json(id) from sales where company_id = p_company and customer_id = p_customer and status = 'posted' order by posted_at desc limit 1);
+end $$;
+
+-- What a customer owes = their starting balance + their invoices (payments come in Phase 3).
+create or replace function _cust_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(c) - 'company_id' - 'import_id' || jsonb_build_object(
+    'owes', c.opening + coalesce((select sum(total) from sales s where s.customer_id = c.id and s.status = 'posted'), 0),
+    'licenses', coalesce((select jsonb_agg(jsonb_build_object('kind', l.kind, 'number', l.number, 'expires', l.expires, 'copy', l.copy) order by l.kind)
+      from customer_licenses l where l.customer_id = c.id), '[]'::jsonb))
+  from customers c where c.id = p_id $$;
+
+-- Unknown barcodes: the counter logs a scan; picking the item by name records what it was sold as.
+create or replace function upc_unknown_scan(p_company uuid, p_upc text, p_sold_as uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare u text := regexp_replace(coalesce(p_upc,''), '\D', '', 'g'); who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'staff');
+  if length(u) not between 6 and 14 then return; end if;
+  if p_sold_as is not null and not exists (select 1 from items where id = p_sold_as and company_id = p_company) then raise exception 'item not found'; end if;
+  insert into unknown_upcs(company_id, upc, times, last_by, sold_as, sold_by) values (p_company, u, case when p_sold_as is null then 1 else 0 end, who, p_sold_as, case when p_sold_as is null then '' else who end)
+  on conflict (company_id, upc) do update set
+    times = unknown_upcs.times + case when p_sold_as is null then 1 else 0 end,
+    last_at = case when p_sold_as is null then now() else unknown_upcs.last_at end,
+    last_by = case when p_sold_as is null then who else unknown_upcs.last_by end,
+    sold_as = coalesce(p_sold_as, unknown_upcs.sold_as), sold_by = case when p_sold_as is null then unknown_upcs.sold_by else who end,
+    status = 'open';
+end $$;
+
+-- Open ones (not already on an item since).
+create or replace function upc_unknown_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'manager');
+  return coalesce((select jsonb_agg(jsonb_build_object('upc', u.upc, 'times', u.times, 'first_at', u.first_at, 'last_at', u.last_at, 'last_by', u.last_by,
+      'sold_as', u.sold_as, 'sold_as_name', i.name, 'sold_by', u.sold_by) order by u.last_at desc)
+    from unknown_upcs u left join items i on i.id = u.sold_as
+    where u.company_id = p_company and u.status = 'open'
+      and not exists (select 1 from item_sizes z where z.company_id = p_company and z.upc = u.upc)), '[]'::jsonb);
+end $$;
+
+-- Add the barcode to a size that has none, or ignore it.
+create or replace function upc_unknown_done(p_company uuid, p_upc text, p_action text, p_size uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare z item_sizes; nm text;
+begin
+  perform _need(p_company, 'manager');
+  if p_action = 'ignore' then
+    update unknown_upcs set status = 'ignored' where company_id = p_company and upc = p_upc;
+    perform _log(p_company, 'barcode ignored', jsonb_build_object('upc', p_upc));
+    return upc_unknown_list(p_company);
+  end if;
+  if p_action <> 'add' then raise exception 'unknown action'; end if;
+  select * into z from item_sizes where id = p_size and company_id = p_company;
+  if z.id is null then raise exception 'pick a size'; end if;
+  if z.upc <> '' then raise exception 'that size already has a barcode — pick another size or add a size to the item'; end if;
+  if exists (select 1 from item_sizes where company_id = p_company and upc = p_upc) then raise exception 'that barcode is already on an item'; end if;
+  update item_sizes set upc = p_upc where id = z.id;
+  update unknown_upcs set status = 'added' where company_id = p_company and upc = p_upc;
+  select name into nm from items where id = z.item_id;
+  update items set updated_at = now() where id = z.item_id;
+  perform _log(p_company, 'barcode added', jsonb_build_object('upc', p_upc, 'item', z.item_id, 'name', nm, 'size', z.name));
+  return upc_unknown_list(p_company);
+end $$;
+
+-- License rules: 'off' = don't warn at the Counter (owners only; licenses still show on the customer's page and in reports).
+create or replace function company_settings_set(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s jsonb := '{}'::jsonb; before jsonb; st text; ks jsonb; r text := _need(p_company, 'manager');
+begin
+  select settings into before from companies where id = p_company;
+  if p ? 'lic_mode' then
+    if p->>'lic_mode' not in ('warn','ask','off') then raise exception 'pick only warn, ask for a manager''s OK, or don''t warn at the Counter'; end if;
+    if p->>'lic_mode' = 'off' and r <> 'owner' then raise exception 'only owners can turn off the warning at the Counter'; end if;
+    s := s || jsonb_build_object('lic_mode', p->>'lic_mode'); end if;
+  if p ? 'lic_need' then
+    if jsonb_typeof(p->'lic_need') <> 'object' then raise exception 'pick licenses for each state'; end if;
+    for st, ks in select * from jsonb_each(p->'lic_need') loop
+      if not exists (select 1 from company_states where company_id = p_company and state = st) then raise exception 'you don''t sell in %', st; end if;
+      if jsonb_typeof(ks) <> 'array' or exists (select 1 from jsonb_array_elements_text(ks) k where k not in ('resale','location','tobacco','vapor','hemp','beer'))
+        then raise exception 'pick licenses from the list'; end if;
+    end loop;
+    s := s || jsonb_build_object('lic_need', p->'lic_need'); end if;
+  if p ? 'remind_days' then
+    if (p->>'remind_days')::int not between 0 and 120 then raise exception 'reminders can be 0 to 120 days ahead'; end if;
+    s := s || jsonb_build_object('remind_days', (p->>'remind_days')::int); end if;
+  if p ? 'default_level' then
+    if not exists (select 1 from price_levels where company_id = p_company and n = (p->>'default_level')::int) then raise exception 'pick a price level'; end if;
+    s := s || jsonb_build_object('default_level', (p->>'default_level')::int); end if;
+  update companies set settings = settings || s where id = p_company;
+  perform _log(p_company, 'settings changed', jsonb_build_object('before', before, 'after', s));
+  return _company_json(p_company);
+end $$;
+
+revoke execute on function _my_name(uuid), _sale_price(uuid,int,jsonb), _sale_json(uuid) from public, anon, authenticated;
+revoke execute on function sale_save(uuid,jsonb), sales_list(uuid,text), sale_last(uuid,uuid), upc_unknown_scan(uuid,text,uuid), upc_unknown_list(uuid), upc_unknown_done(uuid,text,text,uuid) from public, anon;
+grant execute on function sale_save(uuid,jsonb), sales_list(uuid,text), sale_last(uuid,uuid), upc_unknown_scan(uuid,text,uuid), upc_unknown_list(uuid), upc_unknown_done(uuid,text,text,uuid) to authenticated;

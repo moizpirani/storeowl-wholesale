@@ -98,7 +98,7 @@ export function makeCatalog(X) {
     const noPh = all.filter((it) => it.active !== false && !it.photo_url).length;
     const hidden = all[0] && all[0].cost_hidden;
     const head = '<div class="hdr"><h1>Items<span class="count">' + all.filter((x) => x.active !== false).length.toLocaleString() + '</span></h1>' +
-      (mgr ? '<button class="btn" id="it-photos" data-guide="items-list-photos">Add photos</button><button class="btn" id="it-import" data-guide="items-list-import">Bring in from your old system</button><button class="btn amber" id="it-add" data-guide="items-list-add">+ Add item</button>' : '') + '</div>';
+      (mgr ? '<button class="btn" id="it-bc" data-guide="items-list-barcodes">Barcodes to add</button><button class="btn" id="it-photos" data-guide="items-list-photos">Add photos</button><button class="btn" id="it-import" data-guide="items-list-import">Bring in from your old system</button><button class="btn amber" id="it-add" data-guide="items-list-add">+ Add item</button>' : '') + '</div>';
     const bar = '<div class="bar"><input class="inp q" id="it-q" type="search" placeholder="Scan a barcode, or search name, UPC or item #" value="' + esc(S.q) + '" data-guide="items-list-search">' +
       '<div class="seg2"><button class="' + (S.f === 'all' ? 'on' : '') + '" data-itf="all" data-guide="items-list-filter">All</button>' +
       '<button class="or' + (S.f === 'need' ? ' on' : '') + '" data-itf="need" data-guide="items-list-filter">Needs you<b>' + need + '</b></button>' +
@@ -310,6 +310,7 @@ export function makeCatalog(X) {
     q('#it-cat').onchange = (e) => { S.cat = e.target.value; X.render(); };
     if (q('#it-add')) q('#it-add').onclick = () => openItem('new');
     if (q('#it-import')) q('#it-import').onclick = () => X.startImport('items');
+    if (q('#it-bc')) q('#it-bc').onclick = () => { A.view = 'barcodes'; A.bc = null; A.bcp = null; X.render(); };
     if (q('#it-photos')) q('#it-photos').onclick = () => { A.ph = { rows: [], busy: false, done: 0, total: 0, reading: '' }; X.render(); };
     if (A.ph) bindPhotos();
     function bindRows() {
@@ -914,8 +915,9 @@ export function makeCatalog(X) {
       coStates().map(stBlock).join('') +
       '<h2 class="mt">When a needed license is missing or ended</h2>' +
       '<div class="seg"><button class="' + (R.lic_mode === 'warn' ? 'on' : '') + '" id="lr-warn" data-guide="settings-licenses-warn-only"' + dis + '>Only warn me</button>' +
-      '<button class="' + (R.lic_mode === 'ask' ? 'on' : '') + '" id="lr-ask" data-guide="settings-licenses-ask-manager"' + dis + '>Ask for a manager’s OK</button></div>' +
-      '<p class="sm">You can always still sell. Every time someone sells anyway, it’s written in the customer’s History.</p>' +
+      '<button class="' + (R.lic_mode === 'ask' ? 'on' : '') + '" id="lr-ask" data-guide="settings-licenses-ask-manager"' + dis + '>Ask for a manager’s OK</button>' +
+      (X.isOwner() || R.lic_mode === 'off' ? '<button class="' + (R.lic_mode === 'off' ? 'on' : '') + '" id="lr-off" data-guide="settings-licenses-counter-off"' + (X.isOwner() ? dis : ' disabled') + '>Don’t warn at the Counter</button>' : '') + '</div>' +
+      '<p class="sm">' + (R.lic_mode === 'off' ? 'The Counter won’t warn. Licenses still show on each customer and on Home.' : 'You can always still sell. Every time someone sells anyway, it’s written in the customer’s History.') + '</p>' +
       '<h2 class="mt">Remind me before a license ends</h2><label class="fld narrow"><select id="lr-days" data-guide="settings-licenses-remind"' + dis + '>' +
       [0, 14, 30, 60, 90].map((n) => opt(n, n ? n + ' days before' : 'Don’t remind me', n === R.remind_days)).join('') + '</select></label>' +
       (ro ? '<p class="sm">Only owners and managers can change these.</p>' : '') + '</div>' + saveBarP(lrDirty(), 'lr', 'settings-licenses');
@@ -932,6 +934,7 @@ export function makeCatalog(X) {
     $$('[data-lrsug]').forEach((b) => { b.onclick = () => { R.lic_need[b.dataset.lrsug] = suggestedLic(b.dataset.lrsug); X.render(); }; });
     q('#lr-warn').onclick = () => { R.lic_mode = 'warn'; X.render(); };
     q('#lr-ask').onclick = () => { R.lic_mode = 'ask'; X.render(); };
+    const lo = q('#lr-off'); if (lo) lo.onclick = () => { R.lic_mode = 'off'; X.render(); };
     q('#lr-days').onchange = (e) => { R.remind_days = +e.target.value; upd(); };
     q('#lr-undo').onclick = () => { A.lr = null; X.render(); };
     q('#lr-save').onclick = async () => {

@@ -8,12 +8,14 @@ import { owlSvg } from './owl.js';
 import { STATES, stateName, neighborsOf, cleanStates, statesLine } from './states.js';
 import { makeCatalog } from './catalog.js';
 import { makeImport } from './importui.js';
+import { makeCounter } from './counter.js';
 import { custIssues, itemIssues, settingsOf, todayIso, licName } from './rules.js';
 
 const IC = {
   home: 'M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
   counter: 'M3 9h18v11H3zM3 9l2-5h14l2 5M8 13h3M8 16h6',
   invoices: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3',
+  review: 'M6 3h12v18H6zM9 12l2 2 4-4M9 7h6',
   customers: 'M3 21V10l9-6 9 6v11M9 21v-6h6v6',
   items: 'M3 7l9-4 9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10',
   payments: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM6 10v4M18 10v4',
@@ -26,8 +28,9 @@ function ic(k) { return '<svg class="ic" viewBox="0 0 24 24" width="22" height="
 // The side menu. `phase` = the build phase that brings a page (shown until it's built).
 export const MENU = [
   { k: 'home', n: 'Home' },
-  { k: 'counter', n: 'Counter', phase: 2 },
-  { k: 'invoices', n: 'Invoices', phase: 2 },
+  { k: 'counter', n: 'Counter' },
+  { k: 'review', n: 'Review', mgr: true },
+  { k: 'invoices', n: 'Invoices' },
   { k: 'customers', n: 'Customers' },
   { k: 'items', n: 'Items' },
   { k: 'payments', n: 'Payments', phase: 3 },
@@ -65,6 +68,7 @@ export function startApp(root, db) {
   const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
     render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k) });
   const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
+  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
@@ -82,7 +86,7 @@ export function startApp(root, db) {
     if (A.phase === 'setup' && !A.su.f.email) A.su.f.email = A.me.email;
     render();
   }
-  function pickCompany(id) { A.cid = id; try { localStorage.setItem('sow-company', id); } catch (e) { /* ok */ } A.co = A.st = A.people = A.hist = A.items = A.custs = A.it = A.cu = A.lv = A.lr = null; render(); }
+  function pickCompany(id) { A.cid = id; try { localStorage.setItem('sow-company', id); } catch (e) { /* ok */ } A.co = A.st = A.people = A.hist = A.items = A.custs = A.it = A.cu = A.lv = A.lr = A.ct = A.rv = A.rvn = A.ivs = A.bc = A.bcp = A.stoday = null; render(); }
   function say(m, bad) { A.msg = m; A.bad = !!bad; }
 
   function render() {
@@ -236,7 +240,8 @@ export function startApp(root, db) {
   function officeHtml() {
     const c = co();
     const rail = '<nav class="rail" aria-label="Menu"><div class="railbrand" title="StoreOwl Wholesale">' + owlSvg({}) + '</div>' +
-      MENU.map((m) => '<button class="railbtn' + ((A.view === 'import' ? (A.im && A.im.kind) || 'items' : A.view) === m.k ? ' on' : '') + (m.phase ? ' later' : '') + '" data-go="' + m.k + '" data-guide="menu-' + m.k + '">' + ic(m.k) + '<span>' + m.n + '</span></button>').join('') + '</nav>';
+      MENU.filter((m) => !m.mgr || isMgr()).map((m) => '<button class="railbtn' + (onMenu() === m.k ? ' on' : '') + (m.phase ? ' later' : '') + '" data-go="' + m.k + '" data-guide="menu-' + m.k + '">' + ic(m.k) + '<span>' + m.n + '</span>' +
+        (m.k === 'review' ? '<i class="badge' + (A.rvn ? '' : ' hide') + '">' + (A.rvn || '') + '</i>' : '') + '</button>').join('') + '</nav>';
     const sw = A.companies.length > 1
       ? '<select id="co-pick" class="copick" data-guide="common-company-switch">' + A.companies.map((x) => opt(x.id, x.name, x.id === A.cid)).join('') + '</select>'
       : '<span class="coname">' + esc(c.name) + '</span>';
@@ -244,19 +249,27 @@ export function startApp(root, db) {
       '<details class="acct"><summary data-guide="common-account">' + esc(A.me.email) + ' ▾</summary><div class="acctmenu"><span>' + ROLE[c.role] + '</span>' +
       '<button class="btn" id="sign-out" data-guide="common-sign-out">Sign out</button></div></details></header>';
     const m = MENU.find((x) => x.k === A.view) || MENU[0];
-    const menuOn = A.view === 'import' ? (A.im && A.im.kind) || 'items' : A.view;
     let page;
     if (A.view === 'home') page = homeHtml();
     else if (A.view === 'settings') page = settingsHtml();
     else if (A.view === 'items') page = cat.itemsHtml();
     else if (A.view === 'customers') page = cat.custHtml();
     else if (A.view === 'import') page = imp.html();
+    else if (A.view === 'counter') page = ctr.html();
+    else if (A.view === 'review') page = ctr.reviewHtml();
+    else if (A.view === 'invoices') page = ctr.invoicesHtml();
+    else if (A.view === 'barcodes') page = ctr.bcHtml();
     else page = '<h1>' + m.n + '</h1><div class="card soon"><b>Not built yet</b><span>Comes in Phase ' + m.phase + ' of the build plan.</span></div>';
     const toast = A.msg ? '<div class="toast' + (A.bad ? ' bad' : '') + '" role="status">' + esc(A.msg) + '<button id="toast-x" aria-label="Close" data-guide="common-message-close">×</button></div>' : '';
     return rail + '<div class="shell">' + top + '<main class="page">' + page + '</main></div>' + toast;
   }
+  function onMenu() { return A.view === 'import' ? (A.im && A.im.kind) || 'items' : A.view === 'barcodes' ? 'items' : A.view; }
   function bindOffice() {
     root.querySelectorAll('[data-go]').forEach((b) => { b.onclick = () => {
+      if (A.view === 'counter' && ctr.dirty() && !window.confirm('This sale isn’t saved. Leave it? (Suspend keeps it for later.)')) return;
+      if (b.dataset.go === 'counter' && A.ct && A.ct.step !== 'sale') { A.ct.step = 'home'; A.ct.done = null; }
+      if (b.dataset.go === 'review') A.rv = null;
+      if (b.dataset.go === 'invoices') A.ivs = null;
       const C = A.cu;
       if (C && C.open && (C.open === 'new' || JSON.stringify(C.ed) !== C.orig || (C.led && JSON.stringify(C.led) !== C.lorig)) && !window.confirm('Your changes to this customer aren’t saved. Leave without saving?')) return;
       const I = A.it;
@@ -273,6 +286,11 @@ export function startApp(root, db) {
     if (A.view === 'items') cat.bindItems();
     if (A.view === 'customers') cat.bindCust();
     if (A.view === 'import') imp.bind();
+    if (A.view === 'counter') ctr.bind();
+    if (A.view === 'review') ctr.bindReview();
+    if (A.view === 'invoices') ctr.bindInvoices();
+    if (A.view === 'barcodes') ctr.bindBc();
+    ctr.loadReviewCount();
   }
 
   // ----- Home -----
@@ -288,7 +306,7 @@ export function startApp(root, db) {
     const cNeed = custs.filter((x) => custIssues(x, st, t, c.home).length).length, iNeed = items.filter((x) => itemIssues(x, c.levels).length).length;
     const n = (v) => (A.items ? v.toLocaleString() : '…');
     return '<h1>' + greet() + (name ? ', ' + esc(name) : '') + '</h1>' +
-      '<div class="bxs">' + box('Sales today', '$0.00', 'No invoices yet') + box('Customers', n(custs.length), cNeed ? '<span class="miss">' + cNeed + ' need you</span>' : '') +
+      '<div class="bxs">' + box('Sales today', A.stoday ? '$' + A.stoday.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '…', A.stoday ? (A.stoday.n ? A.stoday.n + ' invoice' + (A.stoday.n === 1 ? '' : 's') : 'No invoices yet') : '') + box('Customers', n(custs.length), cNeed ? '<span class="miss">' + cNeed + ' need you</span>' : '') +
       box('Items', n(items.length), iNeed ? '<span class="miss">' + iNeed + ' need you</span>' : '') + box('Selling in', String(1 + c.others.length), esc(statesLine(c.home, c.others))) + '</div>' +
       '<div class="card"><h2>Getting set up</h2><table class="t"><tbody>' +
       row(true, 'Company details', esc(c.name), 'settings:company', 'home-setup-company') +
@@ -301,6 +319,7 @@ export function startApp(root, db) {
   function bindHome() {
     root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; if (t) A.stab = t; render(); }; });
     cat.load();
+    if (!A.stoday) { const t = todayIso(); db.sales(A.cid, 'posted').then((l) => { const d = l.filter((x) => x.invoice_date === t); A.stoday = { n: d.length, total: Math.round(d.reduce((a, x) => a + Number(x.total), 0) * 100) / 100 }; if (A.view === 'home') render(); }).catch(() => { A.stoday = { n: 0, total: 0 }; }); }
     if (!A.people) db.members(A.cid).then((p) => { A.people = p; if (A.view === 'home') render(); }).catch(() => { /* home still works */ });
   }
 

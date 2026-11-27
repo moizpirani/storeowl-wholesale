@@ -2,7 +2,7 @@
 // A pretend backend (makeFake) has the same calls, for tests and pictures.
 
 import { cleanStates } from './states.js';
-import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc } from './rules.js';
+import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale } from './rules.js';
 
 export function makeDb(sb) {
   async function rpc(name, args) {
@@ -75,7 +75,14 @@ export function makeDb(sb) {
     importCustomers: (id, imp, rows) => rpc('import_customers', { p_company: id, p_import: imp, p_rows: rows }),
     importFinish: (id, imp) => rpc('import_finish', { p_company: id, p_import: imp }),
     imports: (id) => rpc('imports_list', { p_company: id }),
-    importUndo: (id, imp) => rpc('import_undo', { p_company: id, p_import: imp })
+    importUndo: (id, imp) => rpc('import_undo', { p_company: id, p_import: imp }),
+    // Counter (Phase 2)
+    saleSave: (id, p) => rpc('sale_save', { p_company: id, p }),
+    sales: (id, status) => rpc('sales_list', { p_company: id, p_status: status }),
+    saleLast: (id, cust) => rpc('sale_last', { p_company: id, p_customer: cust }),
+    upcScan: (id, upc, soldAs) => rpc('upc_unknown_scan', { p_company: id, p_upc: upc, p_sold_as: soldAs || null }),
+    upcList: (id) => rpc('upc_unknown_list', { p_company: id }),
+    upcDone: (id, upc, action, size) => rpc('upc_unknown_done', { p_company: id, p_upc: upc, p_action: action, p_size: size || null })
   };
 }
 
@@ -94,7 +101,7 @@ export function plain(m) {
 export function makeFake(opts) {
   opts = opts || {};
   let me = opts.signedIn ? { email: opts.signedIn } : null;
-  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [] };
+  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [] };
   let n = 0;
   const id = () => 'c' + (++n);
   const uid = (email) => 'u-' + email;
@@ -121,13 +128,19 @@ export function makeFake(opts) {
     return o;
   }
   function custOut(c, full) {
-    const o = copy(c); delete o.company_id; delete o.import_id; o.owes = c.opening || 0;
+    const o = copy(c); delete o.company_id; delete o.import_id; o.owes = Math.round(((c.opening || 0) + S.sales.filter((x) => x.customer_id === c.id && x.status === 'posted').reduce((a, x) => a + x.total, 0)) * 100) / 100;
     if (full) {
       o.notes = S.notes.filter((x) => x.customer_id === c.id).slice().reverse().map((x) => ({ id: x.id, text: x.text, by: x.by, at: x.at }));
       o.history = S.log.filter((x) => x.company_id === c.company_id && x.detail.customer === c.id).slice(0, 100);
       o.copies = (S.copies || []).filter((x) => x.customer_id === c.id && !x.removed_at).slice().reverse()
         .map((x) => ({ id: x.id, kind: x.kind, name: x.name, type: x.type, url: x.url, number: x.number, expires: x.expires, by: x.by, at: x.at }));
     }
+    return o;
+  }
+  function saleOut(x) {
+    const o = copy(x); delete o.company_id;
+    const c = S.customers.find((y) => y.id === x.customer_id) || {};
+    o.customer = { id: c.id, name: c.name, store_no: c.store_no, city: c.city, level: c.level, terms: c.terms };
     return o;
   }
   function log(cid, what, detail) {
@@ -235,7 +248,9 @@ export function makeFake(opts) {
       const c = S.companies.find((x) => x.id === cid);
       if ('remind_days' in p && !(p.remind_days >= 0 && p.remind_days <= 120)) throw new Error('Reminders can be 0 to 120 days ahead');
       if ('default_level' in p && !c.levels.some((l) => l.n === +p.default_level)) throw new Error('Pick a price level');
-      if ('lic_mode' in p && !['warn', 'ask'].includes(p.lic_mode)) throw new Error('Pick only warn or ask for a manager’s OK');
+      const me2 = need(cid, 'manager');
+      if ('lic_mode' in p && !['warn', 'ask', 'off'].includes(p.lic_mode)) throw new Error('Pick only warn, ask for a manager’s OK, or don’t warn at the Counter');
+      if (p.lic_mode === 'off' && me2.role !== 'owner') throw new Error('Only owners can turn off the warning at the Counter');
       if ('lic_need' in p) {
         const states = [c.home].concat(c.others || []);
         for (const st of Object.keys(p.lic_need || {})) {
@@ -416,6 +431,85 @@ export function makeFake(opts) {
       x.undone_at = new Date().toISOString();
       log(cid, 'import taken back', { import: imp, kind: x.kind, file: x.file, removed: before - list.length });
       return { removed: before - list.length };
+    },
+    // ----- Counter -----
+    async saleSave(cid, p) {
+      const m = need(cid, 'staff');
+      const who = m.name || me.email;
+      if (!['suspend', 'review', 'complete', 'cancel'].includes(p.action)) throw new Error('Unknown action');
+      let s = p.id && S.sales.find((x) => x.id === p.id && x.company_id === cid);
+      if (p.id && !s) throw new Error('Sale not found');
+      if (s && !['suspended', 'review'].includes(s.status)) throw new Error('This sale is already ' + (s.status === 'posted' ? 'an invoice' : 'cancelled'));
+      if (s && s.status === 'review' && m.role === 'staff') throw new Error('An owner or manager finishes sales sent for review');
+      if (p.action === 'cancel') {
+        if (!s) throw new Error('Nothing to cancel');
+        s.status = 'cancelled'; s.updated_at = new Date().toISOString();
+        log(cid, 'sale cancelled', { sale: s.id, customer: s.customer_id, total: s.total });
+        return saleOut(s);
+      }
+      const cu = S.customers.find((x) => x.id === (p.customer_id || (s && s.customer_id)) && x.company_id === cid);
+      if (!cu) throw new Error('Pick a customer');
+      if (!(p.lines || []).length) throw new Error('Scan at least one item');
+      const pr = priceSale(p.lines, S.items.filter((x) => x.company_id === cid), cu.level);
+      const gone = pr.lines.find((l) => l.missing === 'gone'); if (gone) throw new Error('An item on this sale isn’t in your list any more');
+      const np = pr.lines.find((l) => l.missing === 'price'); if (np) throw new Error(np.name + ' (' + np.size + ') has no price for this customer’s level');
+      if (p.action === 'complete' && !pr.count) throw new Error('Nothing is shipped on this sale');
+      if (p.action === 'review' && !String(p.why || '').trim()) throw new Error('Say what the manager should check');
+      const now = new Date().toISOString();
+      if (!s) { s = { id: id(), company_id: cid, number: null, status: 'suspended', why: '', lic_reason: '', by_name: who, created_at: now, sent_at: null, posted_at: null, posted_by: '', invoice_date: null }; S.sales.push(s); }
+      Object.assign(s, { customer_id: cu.id, lines: pr.lines.map((l) => { const o = Object.assign({}, l); delete o.sizes; delete o.photo_url; delete o.missing; delete o.group; return o; }),
+        total: pr.total, units: pr.count, updated_at: now });
+      if (String(p.lic_reason || '').trim()) s.lic_reason = p.lic_reason.trim().slice(0, 200);
+      if (p.action === 'suspend') { s.status = 'suspended'; log(cid, 'sale suspended', { sale: s.id, customer: cu.id, total: s.total }); }
+      else if (p.action === 'review') { s.status = 'review'; s.why = p.why.trim().slice(0, 300); s.sent_at = now; log(cid, 'sale sent for review', { sale: s.id, customer: cu.id, why: s.why, total: s.total }); }
+      else {
+        const co = S.companies.find((x) => x.id === cid);
+        co.next_invoice = co.next_invoice || 1001;
+        s.invoice_date = s.status === 'review' ? (s.sent_at || now).slice(0, 10) : now.slice(0, 10);
+        s.number = co.next_invoice++; s.status = 'posted'; s.posted_at = now; s.posted_by = who;
+        log(cid, 'invoice posted', { sale: s.id, number: s.number, customer: cu.id, total: s.total, license_reason: s.lic_reason || null });
+      }
+      return saleOut(s);
+    },
+    async sales(cid, status) {
+      const m = need(cid, 'staff');
+      if (!['suspended', 'review', 'posted'].includes(status)) throw new Error('Unknown list');
+      if (status === 'review' && m.role === 'staff') throw new Error('Only owners and managers see sales sent for review');
+      return S.sales.filter((x) => x.company_id === cid && x.status === status).sort((a, b) => (b.created_at > a.created_at ? 1 : -1)).map(saleOut);
+    },
+    async saleLast(cid, cust) {
+      need(cid, 'staff');
+      const l = S.sales.filter((x) => x.company_id === cid && x.customer_id === cust && x.status === 'posted').sort((a, b) => (b.posted_at > a.posted_at ? 1 : -1))[0];
+      return l ? saleOut(l) : null;
+    },
+    async upcScan(cid, upc, soldAs) {
+      const m = need(cid, 'staff');
+      const u = String(upc || '').replace(/\D/g, '');
+      if (u.length < 6 || u.length > 14) return;
+      let x = S.upcs.find((y) => y.company_id === cid && y.upc === u);
+      const now = new Date().toISOString();
+      if (!x) { x = { company_id: cid, upc: u, times: 0, first_at: now, last_at: now, last_by: '', sold_as: null, sold_by: '', status: 'open' }; S.upcs.push(x); }
+      if (soldAs) { x.sold_as = soldAs; x.sold_by = m.name || me.email; } else { x.times++; x.last_at = now; x.last_by = m.name || me.email; }
+      x.status = 'open';
+    },
+    async upcList(cid) {
+      need(cid, 'manager');
+      return S.upcs.filter((x) => x.company_id === cid && x.status === 'open' && !S.items.some((it) => it.company_id === cid && it.sizes.some((z) => z.upc === x.upc)))
+        .sort((a, b) => (b.last_at > a.last_at ? 1 : -1))
+        .map((x) => { const it = S.items.find((i) => i.id === x.sold_as); return Object.assign(copy(x), { sold_as_name: it ? it.name : null }); });
+    },
+    async upcDone(cid, upc, action, sizeId) {
+      need(cid, 'manager');
+      const x = S.upcs.find((y) => y.company_id === cid && y.upc === upc);
+      if (action === 'ignore') { if (x) x.status = 'ignored'; log(cid, 'barcode ignored', { upc }); return api.upcList(cid); }
+      let it = null, z = null;
+      S.items.forEach((i) => { if (i.company_id === cid) i.sizes.forEach((y) => { if (y.id === sizeId) { it = i; z = y; } }); });
+      if (!z) throw new Error('Pick a size');
+      if (z.upc) throw new Error('That size already has a barcode — pick another size or add a size to the item');
+      if (S.items.some((i) => i.company_id === cid && i.sizes.some((y) => y.upc === upc))) throw new Error('That barcode is already on an item');
+      z.upc = upc; if (x) x.status = 'added';
+      log(cid, 'barcode added', { upc, item: it.id, name: it.name, size: z.name });
+      return api.upcList(cid);
     },
     async noteAdd(cid, cust, text) {
       const m = need(cid, 'staff');

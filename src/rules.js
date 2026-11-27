@@ -243,3 +243,51 @@ export function breaksCheck(z) {
   }
   return '';
 }
+
+// ---------- Sales (Counter) ----------
+// Prices a sale the same way the database does. lines = [{size_id, ordered, shipped}], level = the customer's price level.
+// Quantity breaks count every line of the same size, and of items in the same "count together" group (by size name).
+export function priceSale(lines, items, level) {
+  const ix = {};
+  (items || []).forEach((it) => (it.sizes || []).forEach((z) => { ix[z.id] = { it, z }; }));
+  const key = (it, z) => ((it.break_group || '').trim() ? 'g:' + it.break_group.trim().toLowerCase() + '|' + z.name.trim().toLowerCase() : 's:' + z.id);
+  const gq = {};
+  (lines || []).forEach((l) => { const f = ix[l.size_id]; if (f) { const k = key(f.it, f.z); gq[k] = (gq[k] || 0) + (+l.shipped || 0); } });
+  let total = 0, count = 0;
+  const out = (lines || []).map((l) => {
+    const f = ix[l.size_id];
+    if (!f) return Object.assign({}, l, { missing: 'gone' });
+    const { it, z } = f, k = key(it, z), q = gq[k] || 0;
+    const price = z.prices && z.prices[level] != null ? +z.prices[level] : null;
+    const off = breakOff(z.breaks, q);
+    const unit = price == null ? null : Math.round((price - off) * 100) / 100;
+    const sh = +l.shipped || 0, tot = unit == null ? null : Math.round(unit * sh * 100) / 100;
+    if (tot != null) total += tot;
+    count += sh;
+    return { size_id: z.id, item_id: it.id, name: it.name, size: z.name, n: z.n, unit_name: it.unit, upc: z.upc, category: it.category, photo_url: it.photo_url || '',
+      sizes: (it.sizes || []).map((y) => ({ id: y.id, name: y.name })), ordered: +l.ordered || 0, shipped: sh, price, off, unit_price: unit, total: tot,
+      group_qty: q, group: (it.break_group || '').trim(), missing: price == null ? 'price' : '' };
+  });
+  return { lines: out, total: Math.round(total * 100) / 100, count };
+}
+// Plain-words problem with a sale before it's saved, or ''.
+export function saleCheck(sale) {
+  if (!sale.lines.length) return 'Scan at least one item.';
+  const np = sale.lines.find((l) => l.missing === 'price');
+  if (np) return np.name + ' (' + np.size + ') has no price for this customer’s level.';
+  if (sale.lines.find((l) => l.missing === 'gone')) return 'An item on this sale isn’t in your list any more. Take it off.';
+  const bad = sale.lines.find((l) => !(Number.isInteger(l.ordered) && l.ordered >= 0 && Number.isInteger(l.shipped) && l.shipped >= 0));
+  if (bad) return 'Quantities are whole numbers.';
+  if (!sale.lines.some((l) => l.shipped > 0)) return 'Nothing is shipped on this sale.';
+  return '';
+}
+// Find the size a barcode belongs to (any way the UPC is written).
+export function findUpc(items, code) {
+  const c = cleanUpc(code);
+  if (c.length < 6) return null;
+  for (const it of items || []) {
+    if (it.active === false) continue;
+    for (const z of it.sizes || []) if (z.upc && upcSame(c, z.upc)) return { it, z };
+  }
+  return null;
+}

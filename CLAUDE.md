@@ -113,3 +113,20 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   name with the existing ones offered; the hint says how many items count). Customer Prices tab: "5+ $33.90 · 10+ $33.60" under their
   price. `breakOff` / `breakPrice` are ready for the Counter (Phase 2), which applies them. Still to check in Phase 6: a break must not
   take a cigarette below a state's minimum price.
+- **Phase 2, piece 1 = the Counter (built 2026-11-27, Moiz approved the pictures, then "yes build it and put it on test"; migration
+  `phase2_counter_sales_barcodes_2026_11_27` on the test database; ON TEST since 2026-11-27):** `src/counter.js`. Counter main screen = big
+  **New sale**, Resume a suspended sale (count), Find an invoice (Orders tile comes with Phase 5, statements with piece 3). **Privacy:** no recent
+  customers; search shows name · store # · city only and nothing until you type; Owes / Credit left behind "••• Show" (5 s); the screen clears
+  after a sale. Scan → the Ordered box is focused with 1 selected → type, Enter → back to scanning; same item again = +1; Shipped follows
+  Ordered unless changed ("N short"); name search under the scan box (arrows / Enter); lines grouped by category with subtotals; size toggle;
+  breaks applied (`priceSale`). **Unknown barcode** → logged (`upc_unknown_scan`), orange note, pick by name (records "sold as") →
+  Items → **Barcodes to add** (`#it-bc`, managers+, add to a size with no UPC or ignore). Buttons: **Suspend** (finish by closing; a past-due
+  one shows on Review, never posts by itself) · **Send for review** (reason chips + note) · **Complete sale** (Charge to account only, no due
+  date) · Clear / Cancel sale (two taps) · Repeat last order. Licenses per `lic_mode`: warn = orange box + "Why sell anyway?" (required, saved
+  as `sales.lic_reason` and in History); ask = staff must Send for review; **off** = owners only ("Don’t warn at the Counter"), nothing at the
+  Counter, the customer page / Home still show it. **Review** menu item (managers+, badge) = sales sent for review + past-due suspends; opening
+  one lets a manager fix and complete it, dated the day it was sent. **Invoices** = a simple list (search by #, customer, date) with a lines
+  panel; printing / emailing = piece 3. Database: `sales` (suspended | review | posted | cancelled; prices worked out on the server by
+  `_sale_price`, same as `priceSale`), `companies.next_invoice` (from 1001), `sale_save` (suspend | review | complete | cancel), `sales_list`,
+  `sale_last`, `unknown_upcs` + `upc_unknown_*`; owes = opening + posted invoices. Still to come: printing (piece 3), returns (piece 4),
+  suspend time limit / hide balances settings.
