@@ -162,3 +162,14 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   (managers+, `home-needs-licenses`) → Customers filter **Licenses to fix** (`S.f = 'lic'`, `licProblems`; `A.cuF` when Customers wasn't
   opened yet). Also fixed: the `.bx` input style squashed the Home boxes (now `input.bx, select.bx`). Pictures only: `VITE_FAKE_ROLE=staff`
   makes the demo's member staff.
+- **Phase 2, piece 4 = returns, credit memos and void (built 2026-11-27, Moiz approved the pictures, then "put it on test"; migration
+  `phase2_returns_credits_void_2026_11_27` on the test database; ON TEST since 2026-11-26):** Counter home tile **Return or credit**
+  (`ct-credit`, `S.mode='credit'`): pick the store, scan what came back, Came back box (`data-ctcq`), Why (`data-ctwy`, `CREDIT_WHY` damaged /
+  expired / wrong / notordered / other, required), priced at what the store last paid for that size (`credit_prices` → `_last_paid`, posted
+  invoices only), else their level price; **+ Credit without an item** (`ct-other`, desc `data-ctod` + amount `data-ctoa`, `other:true`).
+  Owners / managers Complete credit → Post credit; staff only Send for review; a credit can't be suspended. A credit = `sales.kind 'credit'`,
+  lines and total minus, same number series, lowers owes; prints "CREDIT MEMO" with Came back / Why columns, EDI with minus quantities and
+  total, email says "credit memo". `priceCredit` / `creditCheck` (rules.js) = `_credit_price` (database). **Void** (managers+, posted only,
+  reason required): Invoices panel "Void this invoice…" (`iv-void` → `iv-vwhy`, `iv-vyes`) → `sale_void`: status 'void', `void_at / _by / _why`,
+  kept, crossed out with a red Void tag, no longer counts in owes; prints with a VOID banner. `sales_list('posted')` includes void;
+  `sale_last` invoices only. `dollars(v)` (rules.js) = −$78.40 for minus amounts. Tests: `credits`, `ui-credit`.

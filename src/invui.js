@@ -49,7 +49,7 @@ export function makeInvUi(X) {
     const ediNote = c.edi_email && probs.length ? '<span class="ivprob">' + probs.map((p) => esc(p.t)).join('<br>') + '</span>' : '';
     return '<div class="ivchs">' +
       box('print', 'Print', 'Letter paper', true, copies) +
-      box('email', 'Email the invoice', mail ? 'PDF to ' + esc(mail) : 'No email for this store · add it on the customer’s Details', !!mail) +
+      box('email', (I.sale && I.sale.kind === 'credit') ? 'Email the credit memo' : 'Email the invoice', mail ? 'PDF to ' + esc(mail) : 'No email for this store · add it on the customer’s Details', !!mail) +
       box('edi', 'Email the EDI file', ediSub, !!c.edi_email && !block, ediNote) + '</div>';
   }
   function bindChoices(P, pre, onChange) {
