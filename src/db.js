@@ -85,6 +85,11 @@ export function makeDb(sb) {
     paymentDeposit: (id, pay) => rpc('payment_deposit', { p_company: id, p_id: pay }),
     paymentVoid: (id, pay, why) => rpc('payment_void', { p_company: id, p_id: pay, p_why: why }),
     payments: (id, from, to) => rpc('payments_list', { p_company: id, p_from: from, p_to: to }),
+    bankTodo: (id) => rpc('bank_todo', { p_company: id }),
+    depositMake: (id, p) => rpc('deposit_make', { p_company: id, p }),
+    deposits: (id, from, to) => rpc('deposits_list', { p_company: id, p_from: from, p_to: to }),
+    depositSet: (id, dep, p) => rpc('deposit_set', { p_company: id, p_id: dep, p }),
+    paymentReturned: (id, pay, why) => rpc('payment_returned', { p_company: id, p_id: pay, p_why: why }),
     saleLast: (id, cust) => rpc('sale_last', { p_company: id, p_customer: cust }),
     creditPrices: (id, cust) => rpc('credit_prices', { p_company: id, p_customer: cust }),
     saleVoid: (id, sale, why) => rpc('sale_void', { p_company: id, p_sale: sale, p_why: why }),
@@ -134,7 +139,7 @@ export function plain(m) {
 export function makeFake(opts) {
   opts = opts || {};
   let me = opts.signedIn ? { email: opts.signedIn } : null;
-  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [], payments: [], applies: [] };
+  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [], payments: [], applies: [], deposits: [] };
   let n = 0;
   const id = () => 'c' + (++n);
   const uid = (email) => 'u-' + email;
@@ -176,7 +181,18 @@ export function makeFake(opts) {
   function payOut(p) {
     const o = copy(p); delete o.company_id; const c = S.customers.find((x) => x.id === p.customer_id) || {};
     o.customer = { id: c.id, name: c.name, store_no: c.store_no, city: c.city };
+    const d = p.deposit_id && S.deposits.find((x) => x.id === p.deposit_id);
+    o.deposit = d ? { id: d.id, number: d.number, made_on: d.made_on, status: d.status, by: d.by_name } : null;
+    o.bounced = !!p.bounced; o.deposit_id = p.deposit_id || null;
     o.applied = S.applies.filter((a) => a.from_pay === p.id || a.pay_event === p.id).map((a) => ({ to: a.to_sale, number: (S.sales.find((s) => s.id === a.to_sale) || {}).number || null, amount: a.amount, from_sale: a.from_sale || null }));
+    return o;
+  }
+  const bankOk = (p) => !p.deposit_id && (p.method === 'cash' || p.method === 'check') && p.amount > 0 && (p.status === 'posted' || (p.status === 'held' && p.check_date <= todayIso()));
+  function depOut(d) {
+    const o = copy(d); delete o.company_id; delete o.held_ids;
+    const ps = S.payments.filter((p) => p.deposit_id === d.id);
+    o.came_back = Math.round(ps.filter((p) => p.bounced).reduce((a, p) => a + p.amount, 0) * 100) / 100;
+    o.payments = ps.slice().sort((a, b) => (a.method === b.method ? (a.received === b.received ? a.number - b.number : a.received < b.received ? -1 : 1) : a.method === 'check' ? -1 : 1)).map(payOut);
     return o;
   }
   function lastPaid(cid, cust) {
@@ -591,10 +607,66 @@ export function makeFake(opts) {
       const x = S.payments.find((y) => y.id === pid && y.company_id === cid);
       if (!x) throw new Error('Payment not found');
       if (x.status === 'void') throw new Error('This is already void');
+      if (x.deposit_id) { const dd = S.deposits.find((y) => y.id === x.deposit_id); throw new Error('It’s in deposit #' + dd.number + ': undo the deposit first' + (x.method === 'check' ? ', or mark that the check came back' : '')); }
       if (!String(why || '').trim()) throw new Error('Say why it’s void');
       x.status = 'void'; x.void_at = new Date().toISOString(); x.void_by = myName(cid); x.void_why = String(why).trim();
       S.applies = S.applies.filter((a) => !(a.pay_event === x.id && a.from_pay !== x.id));
       log(cid, 'payment voided', { payment: x.id, number: x.number, customer: x.customer_id, amount: x.amount, why: x.void_why });
+      return payOut(x);
+    },
+    async bankTodo(cid) {
+      need(cid, 'staff');
+      return S.payments.filter((p) => p.company_id === cid && bankOk(p)).sort((a, b) => (a.received === b.received ? a.number - b.number : a.received < b.received ? -1 : 1)).map(payOut);
+    },
+    async depositMake(cid, p) {
+      const mm = need(cid, 'staff'), who = mm.name || me.email;
+      const ids = Array.from(new Set(p.ids || [])), md = p.made_on || todayIso();
+      if (!ids.length) throw new Error('Tick what goes in the deposit');
+      if (md > todayIso()) throw new Error('The deposit can’t be dated in the future');
+      const L = ids.map((i) => S.payments.find((x) => x.id === i && x.company_id === cid));
+      if (L.some((x) => !x)) throw new Error('Payment not found');
+      L.forEach((x) => { if (!bankOk(x)) throw new Error('Payment ' + x.number + ' can’t go in a deposit any more'); });
+      const co = S.companies.find((x) => x.id === cid); co.next_deposit = co.next_deposit || 1001;
+      const r2 = (v) => Math.round(v * 100) / 100, cash = r2(L.filter((x) => x.method === 'cash').reduce((a, x) => a + x.amount, 0)), checks = r2(L.filter((x) => x.method === 'check').reduce((a, x) => a + x.amount, 0));
+      const d = { id: id(), company_id: cid, number: co.next_deposit++, made_on: md, status: 'made', cash, checks, total: r2(cash + checks), n_checks: L.filter((x) => x.method === 'check').length,
+        bank_ref: '', held_ids: L.filter((x) => x.status === 'held').map((x) => x.id), by_name: who, created_at: new Date().toISOString(), confirmed_at: null, confirmed_by: '', undone_at: null, undone_by: '' };
+      S.deposits.push(d);
+      L.forEach((x) => { x.deposit_id = d.id; if (x.status === 'held') { x.status = 'posted'; x.deposited_at = new Date().toISOString(); x.deposited_by = who; } });
+      log(cid, 'deposit made', { deposit: d.id, number: d.number, cash, checks, total: d.total, payments: L.length });
+      return depOut(d);
+    },
+    async deposits(cid, from, to) {
+      need(cid, 'staff');
+      if (!from || !to || to < from) throw new Error('Pick the dates');
+      const mine = S.deposits.filter((d) => d.company_id === cid);
+      return { rows: mine.filter((d) => d.made_on >= from && d.made_on <= to).sort((a, b) => (a.made_on === b.made_on ? b.number - a.number : a.made_on < b.made_on ? 1 : -1)).map(depOut),
+        waiting: mine.filter((d) => d.status === 'made').sort((a, b) => a.number - b.number).map(depOut) };
+    },
+    async depositSet(cid, did, p) {
+      const act = p.action || '', mm = need(cid, act === 'ref' ? 'staff' : 'manager'), who = mm.name || me.email;
+      const d = S.deposits.find((x) => x.id === did && x.company_id === cid);
+      if (!d) throw new Error('Deposit not found');
+      if (act === 'ref') { if (d.status === 'undone') throw new Error('This deposit was undone'); d.bank_ref = String(p.bank_ref || '').trim().slice(0, 40); }
+      else if (act === 'confirm') { if (d.status !== 'made') throw new Error('Only a deposit waiting for the bank can be confirmed'); d.status = 'confirmed'; d.confirmed_at = new Date().toISOString(); d.confirmed_by = who; log(cid, 'deposit confirmed', { deposit: d.id, number: d.number, total: d.total }); }
+      else if (act === 'unconfirm') { if (d.status !== 'confirmed') throw new Error('This deposit isn’t confirmed'); d.status = 'made'; d.confirmed_at = null; d.confirmed_by = ''; log(cid, 'deposit not confirmed after all', { deposit: d.id, number: d.number }); }
+      else if (act === 'undo') {
+        if (d.status !== 'made') throw new Error('Only a deposit waiting for the bank can be undone');
+        if (S.payments.some((x) => x.deposit_id === d.id && x.bounced)) throw new Error('A check in this deposit came back; it can’t be undone');
+        S.payments.filter((x) => d.held_ids.includes(x.id) && x.status === 'posted').forEach((x) => { x.status = 'held'; x.deposited_at = null; x.deposited_by = ''; });
+        S.payments.filter((x) => x.deposit_id === d.id).forEach((x) => { x.deposit_id = null; });
+        d.status = 'undone'; d.undone_at = new Date().toISOString(); d.undone_by = who; log(cid, 'deposit undone', { deposit: d.id, number: d.number, total: d.total });
+      } else throw new Error('Unknown action');
+      return depOut(d);
+    },
+    async paymentReturned(cid, pid, why) {
+      const mm = need(cid, 'manager'), who = mm.name || me.email;
+      const x = S.payments.find((y) => y.id === pid && y.company_id === cid);
+      if (!x) throw new Error('Payment not found');
+      if (x.method !== 'check' || x.status !== 'posted' || !x.deposit_id) throw new Error('Only a check in a deposit can come back');
+      if (!String(why || '').trim()) throw new Error('Say why it came back');
+      x.status = 'void'; x.bounced = true; x.void_at = new Date().toISOString(); x.void_by = who; x.void_why = 'Check came back: ' + String(why).trim();
+      S.applies = S.applies.filter((a) => !(a.pay_event === x.id && a.from_pay !== x.id));
+      log(cid, 'check came back', { payment: x.id, number: x.number, customer: x.customer_id, amount: x.amount, why: String(why).trim() });
       return payOut(x);
     },
     async payments(cid, from, to) {

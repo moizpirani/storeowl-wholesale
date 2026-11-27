@@ -193,3 +193,16 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   (print / PDF / email through `api/send.js` `{statement}`). **Terms are optional:** `terms = ''` = No terms (the form's first choice and
   the default; import leaves missing terms blank), due on the invoice date, nothing about terms on invoices / statements / emails.
   Tests: `payments`, `ui-payments`.
+- **Phase 3, part 2 = bank deposits (built 2026-11-27, Moiz approved the pictures, then "build it this way and put it on test";
+  migration `phase3_bank_deposits_2026_11_27` on the test database; ON TEST since 2026-11-27):** Payments tabs Payments · Post-dated checks ·
+  **Take to the bank** (count) · **Deposits**. Every cash / check payment waits for the bank (`_bank_ok`: not in a deposit, posted, or a
+  post-dated check whose date has come) until it's in a deposit. Take to the bank (`bank_todo`): ticks (all on; totals change in place),
+  2+ days orange, Deposit date, Print the list, amber **Make deposit** (`deposit_make`, staff+) → Deposit #1001… (cash, checks, total), which
+  counts a post-dated check (`held_ids`, put back to waiting on undo). Deposits (`deposits_list`): dates, boxes Deposited / Waiting for the
+  bank / Checks came back, side panel (checks, cash by store, bank receipt # saved on change, Print slip, managers: Undo deposit (two taps,
+  not after a check came back) and **It's on the statement ✓** = confirmed / "Not confirmed after all") via `deposit_set`. A payment shows
+  Bank · Deposit #N (opens it) / Not deposited yet / reaches the bank by itself (card, bank transfer). A check in a deposit has **Check came
+  back…** (`payment_returned`, managers: void + `bounced`, owed again, deposit shows "A check came back" and the amount less); a payment in a
+  deposit can't be voided by hand (undo the deposit first). The old "Deposited" button on post-dated checks is gone (`payment_deposit` stays
+  in the database, unused). Home "Needs you" (managers+): "$X in cash and checks not deposited · oldest N days" → Take to the bank
+  (`home-needs-bank`). Demo data has payments and a confirmed deposit. Tests: `deposits`, `ui-payments`.

@@ -90,7 +90,7 @@ export function startApp(root, db) {
     if (A.phase === 'setup' && !A.su.f.email) A.su.f.email = A.me.email;
     render();
   }
-  function pickCompany(id) { A.cid = id; try { localStorage.setItem('sow-company', id); } catch (e) { /* ok */ } A.co = A.st = A.people = A.hist = A.items = A.custs = A.it = A.cu = A.lv = A.lr = A.ct = A.rv = A.rvn = A.ivs = A.bc = A.bcp = A.stoday = null; render(); }
+  function pickCompany(id) { A.cid = id; try { localStorage.setItem('sow-company', id); } catch (e) { /* ok */ } A.co = A.st = A.people = A.hist = A.items = A.custs = A.it = A.cu = A.lv = A.lr = A.ct = A.rv = A.rvn = A.ivs = A.bc = A.bcp = A.stoday = A.pm = A.bankWait = null; render(); }
   function say(m, bad) { A.msg = m; A.bad = !!bad; }
 
   function render() {
@@ -314,8 +314,12 @@ export function startApp(root, db) {
     const cNeed = custs.filter((x) => custIssues(x, st, t, c.home).length).length, iNeed = items.filter((x) => itemIssues(x, c.levels).length).length;
     const n = (v) => (A.items ? v.toLocaleString() : '…');
     const licN = isMgr() ? custs.filter((x) => licProblems(x, st, t, c.home).length).length : 0;
-    const needCard = licN ? '<div class="card hneed"><h2>Needs you</h2><div class="hnrow"><span class="tag need">Licenses</span><b>' + licN + ' ' + (licN === 1 ? 'customer is' : 'customers are') +
-      ' missing a license number or it ended</b><button class="btn sm" data-hgo="customers:lic" data-guide="home-needs-licenses">See them ›</button></div></div>' : '';
+    const bw = isMgr() && A.bankWait && A.bankWait.n ? A.bankWait : null;
+    const needCard = licN || bw ? '<div class="card hneed"><h2>Needs you</h2>' +
+      (licN ? '<div class="hnrow"><span class="tag need">Licenses</span><b>' + licN + ' ' + (licN === 1 ? 'customer is' : 'customers are') +
+      ' missing a license number or it ended</b><button class="btn sm" data-hgo="customers:lic" data-guide="home-needs-licenses">See them ›</button></div>' : '') +
+      (bw ? '<div class="hnrow"><span class="tag need">Bank</span><b>$' + bw.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' in cash and checks not deposited' +
+        (bw.old ? ' · oldest ' + bw.old + (bw.old === 1 ? ' day' : ' days') : '') + '</b><button class="btn sm" data-hgo="payments:bank" data-guide="home-needs-bank">Take to the bank ›</button></div>' : '') + '</div>' : '';
     return '<h1>' + greet() + (name ? ', ' + esc(name) : '') + '</h1>' +
       '<div class="bxs">' + box('Sales today', A.stoday ? '$' + A.stoday.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '…', A.stoday ? (A.stoday.n ? A.stoday.n + ' invoice' + (A.stoday.n === 1 ? '' : 's') : 'No invoices yet') : '') + box('Customers', n(custs.length), cNeed ? '<span class="miss">' + cNeed + ' need you</span>' : '') +
       box('Items', n(items.length), iNeed ? '<span class="miss">' + iNeed + ' need you</span>' : '') + box('Selling in', String(1 + c.others.length), esc(statesLine(c.home, c.others))) + '</div>' +
@@ -328,9 +332,13 @@ export function startApp(root, db) {
       '</tbody></table></div>';
   }
   function bindHome() {
-    root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; if (v === 'customers') { if (A.cu) { A.cu.open = null; A.cu.f = t || 'all'; } else A.cuF = t; } else if (t) A.stab = t; render(); }; });
+    root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; if (v === 'payments') pay.tab(t || 'list'); else if (v === 'customers') { if (A.cu) { A.cu.open = null; A.cu.f = t || 'all'; } else A.cuF = t; } else if (t) A.stab = t; render(); }; });
     cat.load();
     if (!A.stoday) { const t = todayIso(); db.sales(A.cid, 'posted').then((l) => { const d = l.filter((x) => x.invoice_date === t); A.stoday = { n: d.length, total: Math.round(d.reduce((a, x) => a + Number(x.total), 0) * 100) / 100 }; if (A.view === 'home') render(); }).catch(() => { A.stoday = { n: 0, total: 0 }; }); }
+    if (isMgr() && !A.bankWait) { A.bankWait = { n: 0, total: 0, old: 0 }; const t0 = todayIso(); db.bankTodo(A.cid).then((l) => {
+      const age = (d) => Math.round((new Date(t0 + 'T12:00:00') - new Date(d + 'T12:00:00')) / 864e5);
+      A.bankWait = { n: l.length, total: Math.round(l.reduce((a, p) => a + Number(p.amount), 0) * 100) / 100, old: l.reduce((m, p) => Math.max(m, age(p.received)), 0) };
+      if (A.view === 'home') render(); }).catch(() => { /* home still works */ }); }
     if (!A.people) db.members(A.cid).then((p) => { A.people = p; if (A.view === 'home') render(); }).catch(() => { /* home still works */ });
   }
 

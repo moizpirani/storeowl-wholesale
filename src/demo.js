@@ -22,13 +22,23 @@ export async function seedDemo(db) {
     contacts: [{ name: 'Raj Patel', role: 'Owner', phone: '(865) 992-4410' }, { name: 'Priya Patel', role: 'Orders', phone: '(865) 992-4411' }] },
   [{ kind: 'resale', number: '0108841203', copy: true }, { kind: 'location', number: '0108841203-001', copy: true }, { kind: 'tobacco', number: '46-3310389', expires: '2026-12-08', copy: true }, { kind: 'hemp', number: 'HDC-22918', expires: '2027-06-30' }]);
   await db.noteAdd(c.id, may.id, 'Pays by check on Fridays. Call Priya for orders.');
-  await cu({ name: 'Clinton Hwy Market', store_no: '104', city: 'Knoxville', level: 1, terms: 'net7', credit_limit: 5000 }, [{ kind: 'resale', number: '0106376987' }, { kind: 'tobacco', number: '46-2218840', expires: '2027-09-30' }]);
+  const clin = await cu({ name: 'Clinton Hwy Market', store_no: '104', city: 'Knoxville', level: 1, terms: 'net7', credit_limit: 5000 }, [{ kind: 'resale', number: '0106376987' }, { kind: 'tobacco', number: '46-2218840', expires: '2027-09-30' }]);
   await cu({ name: 'Rutledge Pike Food Mart', store_no: '118', city: 'Knoxville', level: 1, terms: 'net14', credit_limit: 5000 }, [{ kind: 'resale', number: '0107712455' }, { kind: 'tobacco', number: '46-1190032', expires: '2027-03-31' }]);
-  await cu({ name: 'Powell Quick Stop', store_no: '307', city: 'Powell', level: 3, terms: 'net7', credit_limit: 6000 }, [{ kind: 'resale', number: '0109023318' }, { kind: 'tobacco', number: '46-9001283', expires: '2026-11-15' }]);
+  const pow = await cu({ name: 'Powell Quick Stop', store_no: '307', city: 'Powell', level: 3, terms: 'net7', credit_limit: 6000 }, [{ kind: 'resale', number: '0109023318' }, { kind: 'tobacco', number: '46-9001283', expires: '2026-11-15' }]);
   await cu({ name: 'Corryton Country Store', store_no: '095', city: 'Corryton', level: 2, terms: 'advance', tobacco: false }, []);
-  await cu({ name: 'Halls Crossroads Exxon', store_no: '143', city: 'Knoxville', level: 1, terms: 'net7', credit_limit: 4000 }, [{ kind: 'resale', number: '0106620981' }, { kind: 'tobacco', number: '46-4410077', expires: '2027-12-31' }]);
-  await cu({ name: 'Norris Freeway Shell', store_no: '162', city: 'Norris', level: 1, terms: 'net7', credit_limit: 5000 }, [{ kind: 'resale', number: '0109934410' }, { kind: 'tobacco', number: '46-5528810', expires: '2027-05-31' }]);
+  const halls = await cu({ name: 'Halls Crossroads Exxon', store_no: '143', city: 'Knoxville', level: 1, terms: 'net7', credit_limit: 4000 }, [{ kind: 'resale', number: '0106620981' }, { kind: 'tobacco', number: '46-4410077', expires: '2027-12-31' }]);
+  const nor = await cu({ name: 'Norris Freeway Shell', store_no: '162', city: 'Norris', level: 1, terms: 'net7', credit_limit: 5000 }, [{ kind: 'resale', number: '0109934410' }, { kind: 'tobacco', number: '46-5528810', expires: '2027-05-31' }]);
   await cu({ name: 'Emory Road Market', store_no: '077', city: 'Powell', level: 2, terms: 'net14', credit_limit: 3000 }, [{ kind: 'resale', number: '0105529007' }, { kind: 'tobacco', number: '46-7702214', expires: '2027-08-31' }]);
+  // Payments waiting for the bank and a deposit made earlier (pictures only; dates moved back by hand).
+  if (db.S) {
+    const ago = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    const pm = async (cust, method, amount, no, days) => { const r = await db.paymentSave(c.id, { customer_id: cust.id, method, amount, check_no: no || '' }); db.S.payments.find((x) => x.id === r.id).received = ago(days); return r; };
+    const old = [await pm(nor, 'cash', 1330, '', 12), await pm(clin, 'check', 2215.40, '3820', 12), await pm(halls, 'check', 1799.85, '10144', 12)];
+    const d = await db.depositMake(c.id, { ids: old.map((x) => x.id) });
+    Object.assign(db.S.deposits.find((x) => x.id === d.id), { made_on: ago(11) }); await db.depositSet(c.id, d.id, { action: 'ref', bank_ref: '88123' }); await db.depositSet(c.id, d.id, { action: 'confirm' });
+    await pm(clin, 'check', 1250, '4471', 3); await pm(may, 'cash', 640, '', 3); await pm(halls, 'check', 982.40, '10228', 2);
+    await pm(pow, 'check', 415.10, '2093', 1); await pm(nor, 'cash', 880, '', 1); await pm(may, 'check', 1105, '5512', 0);
+  }
   // Pictures as another role (VITE_FAKE_ROLE=staff): the demo's one member takes that role.
   const role = import.meta.env && import.meta.env.VITE_FAKE_ROLE;
   if (role && db.S) db.S.members.forEach((m) => { if (m.company_id === c.id) m.role = role; });

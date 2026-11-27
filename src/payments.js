@@ -1,4 +1,4 @@
-// Phase 3, part 1: the Payments page (payments list, post-dated checks, today's deposit) and the "Take a payment"
+// Phase 3: the Payments page (payments list, post-dated checks, Take to the bank, Deposits) and the "Take a payment"
 // window, which opens from the Payments page, a customer's page or the Counter. Rules live in the database
 // (payment_save / _open_items); src/rules.js has the same rules for the pretend database and the screen's numbers.
 import { dollars, money, shortDate, todayIso, PAY_METHODS, payMethod, fillOldest } from './rules.js';
@@ -57,7 +57,7 @@ export function makePayments(X) {
     else if (s.left > 0.004) tail = '<b class="ok2">' + $(s.left) + ' left over · kept as store credit</b>';
     else tail = '<b class="ok2">✓ All of it pays invoices</b>';
     return 'Paying ' + $(s.paying) + ' on invoices' + (s.credit ? ' · ' + $(s.credit) + ' from store credit' : '') + ' · ' + tail +
-      (held ? '<br><span class="miss">Post-dated check: it waits until ' + esc(shortDate(T.check_date, true)) + ' and counts when you deposit it.</span>' : '');
+      (held ? '<br><span class="miss">Post-dated check: it waits until ' + esc(shortDate(T.check_date, true)) + ', then goes in Take to the bank. It counts once it’s in a deposit.</span>' : '');
   }
   function modalHtml() {
     const T = A.pay; if (!T) return '';
@@ -145,7 +145,7 @@ export function makePayments(X) {
       T.busy = true; sv.disabled = true;
       try {
         const r = await db.paymentSave(A.cid, p);
-        const done = T.onDone; A.pay = null; A.pm = A.pm ? Object.assign(A.pm, { data: null, key: '' }) : A.pm;
+        const done = T.onDone; A.pay = null; if (A.pm) reset();
         if (A.cu) { A.cu.acc = null; A.cu.oi = null; }
         X.reloadCust && X.reloadCust(T.cust.id);
         X.say('✓ Payment ' + r.number + ' saved · ' + $(r.amount) + ' from ' + r.customer.name + (r.status === 'held' ? ' · post-dated, waiting' : ''));
@@ -164,15 +164,30 @@ export function makePayments(X) {
     if (P.pre === 'last') return [ymd(new Date(d.getFullYear(), d.getMonth() - 1, 1)), ymd(new Date(d.getFullYear(), d.getMonth(), 0))];
     return [P.from || t, P.to || t];
   }
-  function st() { if (!A.pm) A.pm = { tab: 'list', pre: 'month', from: '', to: '', q: '', sel: null, data: null, key: '', err: '', dep: '', vo: null }; return A.pm; }
+  function st() { if (!A.pm) A.pm = { tab: 'list', pre: 'month', from: '', to: '', q: '', sel: null, data: null, key: '', err: '', vo: null,
+    bank: null, bkErr: '', off: {}, made_on: '', busy: false, dpre: 'month', dfrom: '', dto: '', deps: null, dkey: '', dErr: '', dsel: null, undo: false, rb: null }; return A.pm; }
+  // Forget what's loaded so every tab asks again (after a payment, a deposit or a change).
+  function reset() { A.bankWait = null; const P = st(); P.data = null; P.key = ''; P.bank = null; P.deps = null; P.dkey = ''; }
   function load() {
-    const P = st(), [f, t] = range(P), dep = P.dep || today();
-    const lo = f < dep ? f : dep, k = A.cid + '|' + lo + '|' + t;
-    if (P.key === k && (P.data || P.err)) return;
-    P.key = k; P.data = null; P.err = '';
-    const cid = A.cid;
-    db.payments(cid, lo, t > dep ? t : dep).then((d) => { if (A.cid !== cid || P.key !== k) return; P.data = d; if (A.view === 'payments') X.render(); })
-      .catch((e) => { if (P.key !== k) return; P.err = e.message; if (A.view === 'payments') X.render(); });
+    const P = st(), [f, t] = range(P), k = A.cid + '|' + f + '|' + t, cid = A.cid;
+    if (!(P.key === k && (P.data || P.err))) {
+      P.key = k; P.data = null; P.err = '';
+      db.payments(cid, f, t).then((d) => { if (A.cid !== cid || P.key !== k) return; P.data = d; if (A.view === 'payments') X.render(); })
+        .catch((e) => { if (P.key !== k) return; P.err = e.message; if (A.view === 'payments') X.render(); });
+    }
+    if (!P.bank && !P.bkLoading) {
+      P.bkLoading = true; P.bkErr = '';
+      db.bankTodo(cid).then((l) => { P.bkLoading = false; if (A.cid !== cid) return; P.bank = l; if (A.view === 'payments') X.render(); })
+        .catch((e) => { P.bkLoading = false; P.bkErr = e.message; P.bank = []; if (A.view === 'payments') X.render(); });
+    }
+    if (P.tab === 'deps') {
+      const [df, dt] = range({ pre: P.dpre, from: P.dfrom, to: P.dto }), dk = cid + '|' + df + '|' + dt;
+      if (!(P.dkey === dk && (P.deps || P.dErr))) {
+        P.dkey = dk; P.deps = null; P.dErr = '';
+        db.deposits(cid, df, dt).then((d) => { if (P.dkey !== dk) return; P.deps = d; if (A.view === 'payments') X.render(); })
+          .catch((e) => { if (P.dkey !== dk) return; P.dErr = e.message; if (A.view === 'payments') X.render(); });
+      }
+    }
   }
   function tag(p) {
     if (p.status === 'void') return '<span class="tag bad">Void</span>';
@@ -182,7 +197,7 @@ export function makePayments(X) {
   const paidText = (p) => {
     const n = Array.from(new Set(p.applied.map((a) => (a.number ? '#' + a.number : 'Starting balance'))));
     const left = r2(Number(p.amount) - p.applied.filter((a) => !a.from_sale).reduce((a, x) => a + Number(x.amount), 0));
-    const pre = p.status === 'held' ? 'When deposited, pays ' : 'Pays ';
+    const pre = p.status === 'held' ? 'Once deposited, pays ' : 'Pays ';
     if (!n.length) return p.status === 'void' ? 'Paid nothing' : 'Kept as store credit';
     return pre + n.join(', ') + (left > 0.004 && p.status !== 'void' ? ' · ' + $(left) + ' store credit' : '');
   };
@@ -190,7 +205,9 @@ export function makePayments(X) {
     const P = st(); load();
     const held = P.data ? P.data.held : [];
     const dueNow = held.filter((p) => p.check_date <= today()).length;
-    const tabs = '<nav class="ctabs">' + [['list', 'Payments'], ['held', 'Post-dated checks' + (held.length ? '<em' + (dueNow ? '' : ' class="g"') + '>' + held.length + '</em>' : '')], ['deposit', 'Deposit']]
+    const nb = (P.bank || []).length;
+    const tabs = '<nav class="ctabs">' + [['list', 'Payments'], ['held', 'Post-dated checks' + (held.length ? '<em' + (dueNow ? '' : ' class="g"') + '>' + held.length + '</em>' : '')],
+      ['bank', 'Take to the bank' + (nb ? '<em>' + nb + '</em>' : '')], ['deps', 'Deposits']]
       .map(([k, n]) => '<button class="' + (P.tab === k ? 'on' : '') + '" data-pmtab="' + k + '" data-guide="payments-page-tab">' + n + '</button>').join('') + '</nav>';
     const head = '<div class="hdr"><h1>Payments</h1><button class="btn amber" id="pm-new" data-guide="payments-page-take">+ Take a payment</button></div>';
     if (P.err) return head + tabs + '<div class="card"><p class="sm bad">' + esc(P.err) + '</p></div>';
@@ -198,7 +215,8 @@ export function makePayments(X) {
     let body = '';
     if (P.tab === 'list') body = listHtml(P);
     if (P.tab === 'held') body = heldHtml(held);
-    if (P.tab === 'deposit') body = depositHtml(P);
+    if (P.tab === 'bank') body = bankHtml(P);
+    if (P.tab === 'deps') body = depsHtml(P);
     return head + tabs + body;
   }
   function listHtml(P) {
@@ -225,15 +243,31 @@ export function makePayments(X) {
     const lines = p.applied.map((a) => '<tr><td>' + (a.to ? 'Invoice ' + esc(a.number) : 'Starting balance') + (a.from_sale ? '<small>From credit memo</small>' : '') + '</td><td class="n">' + $(a.amount) + '</td></tr>').join('');
     const left = r2(Number(p.amount) - p.applied.filter((a) => !a.from_sale).reduce((s, a) => s + Number(a.amount), 0));
     const voidBox = p.status === 'void' ? '<div class="ivvoidbar"><b>Void</b> · ' + esc(p.void_by) + ' · ' + esc(X.when(p.void_at)) + '<br>' + esc(p.void_why) + '<span class="sm">Kept for your records. What it paid is owed again.</span></div>' : '';
-    const voidAsk = p.status !== 'void' && X.isMgr() ? (V ? '<div class="card ivvoidask"><b>Void payment ' + p.number + '?</b><p class="sm">What it paid is owed again. Use this for a mistake or a check that came back.</p>' +
-        '<label class="fld"><span>Why?</span><input id="pm-vwhy" value="' + esc(V.why) + '" placeholder="e.g. check came back" data-guide="payments-payment-void-why"></label><p class="fmsg" id="pm-verr"></p>' +
-        '<div class="rowr"><button class="btn" id="pm-vno" data-guide="payments-payment-void-cancel">Keep it</button><button class="btn red" id="pm-vyes" data-guide="payments-payment-void-confirm">Void it</button></div></div>'
-      : '<button class="lnk bad ivvoidlnk" id="pm-void" data-guide="payments-payment-void">Void this payment…</button>') : '';
+    const inDep = p.deposit && p.deposit.status !== 'undone', back = !!(V && V.back);
+    let voidAsk = '';
+    if (p.status !== 'void' && X.isMgr()) {
+      if (V) voidAsk = '<div class="card ivvoidask"><b>' + (back ? 'Check #' + esc(p.check_no) + ' came back?' : 'Void payment ' + p.number + '?') + '</b><p class="sm">' +
+          (back ? 'What it paid is owed again, and deposit #' + p.deposit.number + ' shows ' + $(p.amount) + ' less.' : 'What it paid is owed again. Use this for a mistake.') + '</p>' +
+          '<label class="fld"><span>Why?</span><input id="pm-vwhy" value="' + esc(V.why) + '" placeholder="' + (back ? 'e.g. not enough money' : 'e.g. typed the wrong store') + '" data-guide="payments-payment-void-why"></label><p class="fmsg" id="pm-verr"></p>' +
+          '<div class="rowr"><button class="btn" id="pm-vno" data-guide="payments-payment-void-cancel">Keep it</button><button class="btn red" id="pm-vyes" data-guide="payments-payment-void-confirm">' + (back ? 'It came back' : 'Void it') + '</button></div></div>';
+      else if (inDep && p.method === 'check') voidAsk = '<button class="btn sm pmback" id="pm-back" data-guide="payments-payment-check-came-back">Check came back…</button>';
+      else if (inDep) voidAsk = '<p class="sm mut">It’s in deposit #' + p.deposit.number + '. To void it, undo that deposit first.</p>';
+      else voidAsk = '<button class="lnk bad ivvoidlnk" id="pm-void" data-guide="payments-payment-void">Void this payment…</button>';
+    }
+    const dtag = (d) => d.status === 'confirmed' ? '<span class="tag ok">✓ Confirmed by the bank</span>' : '<span class="tag grey">Waiting for the bank</span>';
+    let bankLine = '';
+    if (p.method === 'card' || p.method === 'ach' || p.method === 'other') bankLine = 'Reaches the bank by itself (' + esc(payMethod(p.method).toLowerCase()) + ')';
+    else if (p.bounced && p.deposit) bankLine = '<span class="bad">Came back</span> · was in deposit #' + p.deposit.number + ' · ' + esc(shortDate(p.deposit.made_on, true));
+    else if (inDep) bankLine = '<button class="lnk" data-pmdepopen="' + p.deposit.id + '" data-pmdepdate="' + esc(p.deposit.made_on) + '" data-guide="payments-payment-open-deposit">Deposit #' + p.deposit.number + '</button> · ' +
+      esc(shortDate(p.deposit.made_on, true)) + ' · made by ' + esc(p.deposit.by) + ' ' + dtag(p.deposit);
+    else if (p.status === 'held') bankLine = 'Waits until ' + esc(shortDate(p.check_date, true)) + ', then goes in Take to the bank';
+    else if (p.status === 'posted') bankLine = '<span class="miss">Not deposited yet</span>';
     return '<aside class="card panel ivpan"><div class="hdr"><h2>Payment ' + p.number + '</h2><button class="x" id="pm-px" aria-label="Close" data-guide="payments-payment-close">×</button></div>' +
       '<p class="sm">' + esc(p.customer.name) + ' · ' + esc(shortDate(p.received, true)) + ' · ' + esc(howText(p)) + (p.check_date ? ' · dated ' + esc(shortDate(p.check_date, true)) : '') + ' · by ' + esc(p.by_name) + '</p>' + voidBox +
       '<table class="t"><tbody>' + (lines || '<tr><td class="empty">Paid no invoice</td><td></td></tr>') +
       (left > 0.004 ? '<tr><td>Left over · store credit</td><td class="n">' + $(left) + '</td></tr>' : '') +
       '<tr><td><b>Amount</b></td><td class="n"><b>' + $(p.amount) + '</b></td></tr></tbody></table>' +
+      (bankLine ? '<p class="sm pmbank"><b>Bank</b> · ' + bankLine + '</p>' : '') +
       (p.note ? '<p class="sm">Note: ' + esc(p.note) + '</p>' : '') + voidAsk + '</aside>';
   }
   const P2 = () => st();
@@ -241,42 +275,104 @@ export function makePayments(X) {
     if (!held.length) return '<div class="card"><p class="emptyc">No post-dated checks waiting</p></div>';
     return '<div class="cc"><table class="t tsm actab"><thead><tr><th>Date on the check</th><th>Check #</th><th>Store</th><th>What it pays</th><th class="n">Amount</th><th></th></tr></thead><tbody>' +
       held.map((p) => { const due = p.check_date <= today();
-        return '<tr><td>' + esc(shortDate(p.check_date, true)) + (due ? ' <span class="tag need">Deposit now</span>' : '') + '</td><td class="acnum">' + esc(p.check_no) + '</td><td><b>' + esc(p.customer.name) + '</b></td>' +
+        return '<tr><td>' + esc(shortDate(p.check_date, true)) + (due ? ' <span class="tag need">Ready to deposit</span>' : '') + '</td><td class="acnum">' + esc(p.check_no) + '</td><td><b>' + esc(p.customer.name) + '</b></td>' +
           '<td class="acsub">' + esc(paidText(p)) + '</td><td class="n"><b>' + $(p.amount) + '</b></td><td class="n">' +
-          (due ? '<button class="btn sm" data-pmdep="' + p.id + '" data-guide="payments-held-deposit">Deposited</button>' : '<span class="mut sm">Waits</span>') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+          (due ? '<button class="lnk" data-pmtab="bank" data-guide="payments-held-to-bank">In Take to the bank ›</button>' : '<span class="mut sm">Waits</span>') + '</td></tr>'; }).join('') + '</tbody></table></div>';
   }
-  function depositHtml(P) {
-    const d = P.dep || today(), all = P.data.rows.filter((p) => p.status === 'posted' && (p.method === 'cash' || p.method === 'check') &&
-      ((p.received === d && !p.deposited_at) || (p.deposited_at && String(p.deposited_at).slice(0, 10) === d)));
-    const cash = all.filter((p) => p.method === 'cash'), chk = all.filter((p) => p.method === 'check');
-    const sum = (l) => r2(l.reduce((a, p) => a + Number(p.amount), 0));
-    return '<div class="acbar"><label class="fld pmdep"><span>Deposit for</span><input type="date" class="inp" id="pm-dep" value="' + esc(d) + '" max="' + esc(today()) + '" data-guide="payments-deposit-day"></label>' +
-      '<button class="btn" id="pm-dprint" data-guide="payments-deposit-print">Print deposit list</button></div>' +
-      '<div class="kpis ackpis pmdk"><div class="kb"><span>Cash</span><b>' + $(sum(cash)) + '</b><small>' + cash.length + ' ' + (cash.length === 1 ? 'payment' : 'payments') + '</small></div>' +
-      '<div class="kb"><span>Checks</span><b>' + $(sum(chk)) + '</b><small>' + chk.length + ' ' + (chk.length === 1 ? 'check' : 'checks') + '</small></div>' +
-      '<div class="kb nv"><span>To deposit</span><b>' + $(sum(all)) + '</b></div></div>' +
-      '<div class="cc"><table class="t tsm actab"><thead><tr><th>Check #</th><th>Store</th><th>Payment</th><th class="n">Amount</th></tr></thead><tbody>' +
-      (chk.length ? chk.map((p) => '<tr><td class="acnum">' + esc(p.check_no) + '</td><td>' + esc(p.customer.name) + '</td><td>#' + p.number + '</td><td class="n">' + $(p.amount) + '</td></tr>').join('') : '<tr><td colspan="4" class="empty">No checks</td></tr>') +
-      '<tr><td colspan="3"><b>Cash</b></td><td class="n"><b>' + $(sum(cash)) + '</b></td></tr><tr><td colspan="3"><b>Total</b></td><td class="n"><b>' + $(sum(all)) + '</b></td></tr></tbody></table></div>';
+  // ----- Take to the bank: every cash and check payment not in a deposit yet -----
+  const daysAgo = (d) => Math.round((new Date(today() + 'T12:00:00') - new Date(d + 'T12:00:00')) / 864e5);
+  const waitTag = (p) => { const d = daysAgo(p.status === 'held' || p.deposited_at ? (p.check_date || p.received) : p.received);
+    return d >= 2 ? '<span class="tag need">' + d + ' days</span>' : '<span class="mut sm">' + (d === 1 ? '1 day' : 'Today') + (p.status === 'held' ? ' · was post-dated' : '') + '</span>'; };
+  const ticked = (P) => (P.bank || []).filter((p) => !P.off[p.id]);
+  const sumOf = (l, m) => r2(l.filter((p) => !m || p.method === m).reduce((a, p) => a + Number(p.amount), 0));
+  function bankHtml(P) {
+    if (P.bkErr) return '<div class="card"><p class="sm bad">' + esc(P.bkErr) + '</p></div>';
+    if (!P.bank) return '<div class="card"><p class="sm">Loading…</p></div>';
+    const L = P.bank;
+    if (!L.length) return '<div class="card"><p class="emptyc">✓ Nothing waiting. Every cash and check payment is in a deposit.</p></div>';
+    const old = L.reduce((m, p) => Math.max(m, daysAgo(p.received)), 0), nCash = L.filter((p) => p.method === 'cash').length, nChk = L.length - nCash;
+    const boxes = '<div class="kpis ackpis"><div class="kb nv"><span>Not deposited yet</span><b>' + $(sumOf(L)) + '</b><small>' + L.length + ' ' + (L.length === 1 ? 'payment' : 'payments') + (old ? ' · oldest ' + old + (old === 1 ? ' day' : ' days') : '') + '</small></div>' +
+      '<div class="kb"><span>Cash</span><b>' + $(sumOf(L, 'cash')) + '</b><small>' + nCash + ' ' + (nCash === 1 ? 'payment' : 'payments') + '</small></div>' +
+      '<div class="kb"><span>Checks</span><b>' + $(sumOf(L, 'check')) + '</b><small>' + nChk + ' ' + (nChk === 1 ? 'check' : 'checks') + '</small></div>' +
+      '<div class="kb"><span>Ticked for this deposit</span><b id="bk-tsum">' + $(sumOf(ticked(P))) + '</b><small id="bk-tn">' + ticked(P).length + ' of ' + L.length + '</small></div></div>';
+    const all = !L.some((p) => P.off[p.id]);
+    const rows = L.map((p) => '<tr class="' + (daysAgo(p.received) >= 2 ? 'bklate' : '') + '"><td class="ck"><input type="checkbox" class="bkck" data-bkp="' + p.id + '"' + (P.off[p.id] ? '' : ' checked') + ' data-guide="payments-bank-tick"></td>' +
+      '<td>' + esc(shortDate(p.received, true)) + '</td><td><b>' + esc(p.customer.name) + '</b>' + (p.customer.store_no ? ' <small class="mut">· #' + esc(p.customer.store_no) + '</small>' : '') + '</td>' +
+      '<td>' + esc(payMethod(p.method)) + '</td><td class="acnum">' + esc(p.check_no || '') + '</td><td class="n"><b>' + $(p.amount) + '</b></td><td>' + waitTag(p) + '</td></tr>').join('');
+    const table = '<div class="cc"><table class="t tsm actab bktab"><thead><tr><th class="ck"><input type="checkbox" id="bk-all"' + (all ? ' checked' : '') + ' data-guide="payments-bank-tick-all"></th>' +
+      '<th>Received</th><th>Store</th><th>How</th><th>Check #</th><th class="n">Amount</th><th>Waiting</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    const T = ticked(P);
+    const bar = '<div class="ctbar bkbar"><span id="bk-line"><b>' + T.length + ' ticked</b> · Cash ' + $(sumOf(T, 'cash')) + ' · Checks ' + $(sumOf(T, 'check')) + '</span><span class="sp"></span>' +
+      '<label class="fld bkdate"><span>Deposit date</span><input type="date" class="inp" id="bk-date" value="' + esc(P.made_on || today()) + '" max="' + esc(today()) + '" data-guide="payments-bank-date"></label>' +
+      '<button class="btn" id="bk-print" data-guide="payments-bank-print">Print the list</button>' +
+      '<button class="btn amber" id="bk-make" data-guide="payments-bank-make"' + (T.length && !P.busy ? '' : ' disabled') + '>Make deposit · ' + $(sumOf(T)) + '</button></div><p class="fmsg" id="bk-err"></p>';
+    return boxes + table + bar;
   }
-  function printDeposit() {
-    const P = st(), d = P.dep || today();
-    const all = P.data.rows.filter((p) => p.status === 'posted' && (p.method === 'cash' || p.method === 'check') && ((p.received === d && !p.deposited_at) || (p.deposited_at && String(p.deposited_at).slice(0, 10) === d)));
-    const chk = all.filter((p) => p.method === 'check'), cash = r2(all.filter((p) => p.method === 'cash').reduce((a, p) => a + Number(p.amount), 0));
+  // Update the totals in place when a tick changes (nothing redraws).
+  function bankUpd() {
+    const P = st(), T = ticked(P), L = P.bank || [];
+    const set = (id, h) => { const e = q(id); if (e) e.innerHTML = h; };
+    set('#bk-tsum', $(sumOf(T))); set('#bk-tn', T.length + ' of ' + L.length);
+    set('#bk-line', '<b>' + T.length + ' ticked</b> · Cash ' + $(sumOf(T, 'cash')) + ' · Checks ' + $(sumOf(T, 'check')));
+    const mk = q('#bk-make'); if (mk) { mk.textContent = 'Make deposit · ' + $(sumOf(T)); mk.disabled = !T.length; }
+    const al = q('#bk-all'); if (al) al.checked = !L.some((p) => P.off[p.id]);
+  }
+
+  // ----- Deposits -----
+  const depTag = (d, short) => d.status === 'undone' ? '<span class="tag grey">Undone</span>' : Number(d.came_back) > 0 ? '<span class="tag bad">A check came back</span>'
+    : d.status === 'confirmed' ? '<span class="tag ok">✓ ' + (short ? 'Confirmed' : 'Confirmed by the bank') + '</span>' : '<span class="tag grey">' + (short ? 'Waiting for the bank' : 'Made · waiting for the bank') + '</span>';
+  function depsHtml(P) {
+    const R = { pre: P.dpre, from: P.dfrom, to: P.dto }, [f, t] = range(R);
+    const top = '<div class="acbar"><div class="seg">' + PRES.map(([k, n]) => '<button class="' + (P.dpre === k ? 'on' : '') + '" data-dppre="' + k + '" data-guide="payments-deposits-dates">' + n + '</button>').join('') + '</div>' +
+      (P.dpre === 'custom' ? '<span class="acdt"><input type="date" class="inp" id="dp-from" value="' + esc(f) + '" data-guide="payments-deposits-from"><span>to</span><input type="date" class="inp" id="dp-to" value="' + esc(t) + '" data-guide="payments-deposits-to"></span>'
+        : '<span class="acwhen">' + esc(f === t ? shortDate(f, true) : shortDate(f, true) + ' – ' + shortDate(t, true)) + '</span>') + '</div>';
+    if (P.dErr) return top + '<div class="card"><p class="sm bad">' + esc(P.dErr) + '</p></div>';
+    if (!P.deps) return top + '<div class="card"><p class="sm">Loading…</p></div>';
+    const rows = P.deps.rows, live = rows.filter((d) => d.status !== 'undone'), wait = P.deps.waiting, back = live.filter((d) => Number(d.came_back) > 0);
+    const boxes = '<div class="kpis ackpis"><div class="kb nv"><span>Deposited</span><b>' + $(r2(live.reduce((a, d) => a + Number(d.total), 0))) + '</b><small>' + live.length + ' ' + (live.length === 1 ? 'deposit' : 'deposits') + '</small></div>' +
+      '<div class="kb"><span>Waiting for the bank</span><b>' + $(r2(wait.reduce((a, d) => a + Number(d.total), 0))) + '</b><small>' + (wait.length ? wait.length + ' not confirmed' : 'All confirmed') + '</small></div>' +
+      '<div class="kb"><span>Checks came back</span><b' + (back.length ? ' class="bad"' : '') + '>' + $(r2(back.reduce((a, d) => a + Number(d.came_back), 0))) + '</b><small>' + (back.length ? 'In ' + back.map((d) => '#' + d.number).join(', ') : 'None') + '</small></div></div>';
+    const tr = rows.map((d) => '<tr class="pmr' + (d.status === 'undone' ? ' acvoid' : '') + (P.dsel === d.id ? ' sel' : '') + '" data-dpopen="' + d.id + '"><td class="acnum"><b>#' + d.number + '</b></td><td>' + esc(shortDate(d.made_on)) + '</td><td class="acsub">' + esc(d.by_name) + '</td>' +
+      '<td class="n">' + $(d.cash) + '</td><td class="n">' + $(d.checks) + '</td><td class="n"><b>' + $(d.total) + '</b></td><td class="nw">' + depTag(d, !!P.dsel) + '</td></tr>').join('');
+    const table = '<div class="cc"><table class="t tsm actab"><thead><tr><th>Deposit</th><th>Date</th><th>By</th><th class="n">Cash</th><th class="n">Checks</th><th class="n">Total</th><th>Status</th></tr></thead><tbody>' +
+      (rows.length ? tr : '<tr><td colspan="7" class="empty">No deposits in these dates</td></tr>') + '</tbody></table></div>';
+    const sel = P.dsel && (rows.concat(wait)).find((d) => d.id === P.dsel);
+    return top + boxes + (sel ? '<div class="wrap2">' + table + depPanel(sel, P) + '</div>' : table);
+  }
+  function depPanel(d, P) {
+    const chk = d.payments.filter((p) => p.method === 'check'), cash = d.payments.filter((p) => p.method === 'cash'), mgr = X.isMgr();
+    const line = (p, t) => '<tr' + (p.bounced ? ' class="acvoid"' : '') + '><td>' + t + (p.bounced ? ' <span class="tag bad">Came back</span>' : '') + '</td><td class="n">' + $(p.amount) + '</td></tr>';
+    const ur = d.status === 'undone' ? '<p class="sm">Undone by ' + esc(d.undone_by) + ' · ' + esc(X.when(d.undone_at)) + '. Its payments went back to Take to the bank.</p>' : '';
+    const conf = d.status === 'confirmed' ? '<p class="sm ok2">✓ Confirmed by ' + esc(d.confirmed_by) + ' · ' + esc(X.when(d.confirmed_at)) + '</p>' : '';
+    let btns = '<button class="btn" id="dp-print" data-guide="payments-deposit-print-slip">Print slip</button>';
+    if (d.status === 'made' && mgr) btns = (P.undo ? '<button class="btn red" id="dp-undo2" data-guide="payments-deposit-undo-confirm">Tap again to undo</button>' : '<button class="btn" id="dp-undo" data-guide="payments-deposit-undo">Undo deposit</button>') +
+      btns + '<button class="btn amber" id="dp-conf" data-guide="payments-deposit-confirm">It’s on the statement ✓</button>';
+    if (d.status === 'confirmed' && mgr) btns += '<button class="lnk" id="dp-unconf" data-guide="payments-deposit-unconfirm">Not confirmed after all</button>';
+    return '<aside class="card panel ivpan dppan"><div class="hdr"><h2>Deposit #' + d.number + '</h2><button class="x" id="dp-x" aria-label="Close" data-guide="payments-deposit-close">×</button></div>' +
+      '<p class="sm">' + esc(shortDate(d.made_on, true)) + ' · made by ' + esc(d.by_name) + ' · ' + d.payments.length + ' ' + (d.payments.length === 1 ? 'payment' : 'payments') + ' ' + depTag(d) + '</p>' + ur + conf +
+      (d.status === 'undone' ? '' : '<h3 class="dph">Checks · ' + chk.length + '</h3><table class="t tsm"><tbody>' + (chk.map((p) => line(p, '#' + esc(p.check_no) + ' ' + esc(p.customer.name))).join('') || '<tr><td class="empty">No checks</td><td></td></tr>') + '</tbody></table>' +
+        '<h3 class="dph">Cash · ' + cash.length + (cash.length === 1 ? ' store' : ' stores') + '</h3><table class="t tsm"><tbody>' + cash.map((p) => line(p, esc(p.customer.name))).join('') +
+        '<tr><td><b>Deposit total</b></td><td class="n"><b>' + $(d.total) + '</b></td></tr>' + (Number(d.came_back) > 0 ? '<tr><td class="bad">Less checks that came back</td><td class="n bad">−' + $(d.came_back) + '</td></tr>' : '') + '</tbody></table>' +
+        '<label class="fld"><span>Bank receipt # (optional)</span><input class="inp" id="dp-ref" value="' + esc(d.bank_ref || '') + '" placeholder="Type it from the bank’s receipt" data-guide="payments-deposit-bank-receipt"></label>') +
+      '<p class="fmsg" id="dp-err"></p><div class="rowr">' + btns + '</div></aside>';
+  }
+  function printSlip(d) {
     let box = document.getElementById('printout');
     if (!box) { box = document.createElement('div'); box.id = 'printout'; document.body.appendChild(box); }
-    const co = X.co() || {};
+    const co = X.co() || {}, chk = d ? d.payments.filter((p) => p.method === 'check') : ticked(st()).filter((p) => p.method === 'check');
+    const cash = d ? Number(d.cash) : sumOf(ticked(st()), 'cash'), total = d ? Number(d.total) : sumOf(ticked(st()));
     box.innerHTML = '<style>@media screen{#printout{display:none}}@media print{body>*:not(#printout){display:none!important}#printout{display:block;font:12px Arial}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #ccc;padding:4px;text-align:left}.n{text-align:right}}</style>' +
-      '<h2>' + esc(co.name || '') + ' · Deposit ' + esc(shortDate(d, true)) + '</h2><table><tr><th>Check #</th><th>Store</th><th class="n">Amount</th></tr>' +
+      '<h2>' + esc(co.name || '') + ' · ' + (d ? 'Deposit #' + d.number + ' · ' + esc(shortDate(d.made_on, true)) : 'Cash and checks to deposit · ' + esc(shortDate(today(), true))) + '</h2>' +
+      '<table><tr><th>Check #</th><th>Store</th><th class="n">Amount</th></tr>' +
       chk.map((p) => '<tr><td>' + esc(p.check_no) + '</td><td>' + esc(p.customer.name) + '</td><td class="n">' + $(p.amount) + '</td></tr>').join('') +
-      '<tr><td colspan="2"><b>Checks</b></td><td class="n">' + $(r2(chk.reduce((a, p) => a + Number(p.amount), 0))) + '</td></tr><tr><td colspan="2"><b>Cash</b></td><td class="n">' + $(cash) + '</td></tr>' +
-      '<tr><td colspan="2"><b>Total</b></td><td class="n"><b>' + $(r2(all.reduce((a, p) => a + Number(p.amount), 0))) + '</b></td></tr></table>';
+      '<tr><td colspan="2"><b>Checks · ' + chk.length + '</b></td><td class="n">' + $(r2(chk.reduce((a, p) => a + Number(p.amount), 0))) + '</td></tr><tr><td colspan="2"><b>Cash</b></td><td class="n">' + $(cash) + '</td></tr>' +
+      '<tr><td colspan="2"><b>Total</b></td><td class="n"><b>' + $(total) + '</b></td></tr></table>' + (d ? '<p>Bank receipt #: ' + esc(d.bank_ref || '________________') + '</p><p>Made by ' + esc(d.by_name) + '</p>' : '');
     try { if (typeof window.print === 'function' && !/jsdom/i.test(navigator.userAgent)) window.print(); } catch (e) { /* the page still has it */ }
   }
   function bind() {
     const P = st();
     const nw = q('#pm-new'); if (nw) nw.onclick = () => open({ from: 'payments' });
-    $$('[data-pmtab]').forEach((b) => { b.onclick = () => { P.tab = b.dataset.pmtab; P.sel = null; X.render(); }; });
+    $$('[data-pmtab]').forEach((b) => { b.onclick = () => { P.tab = b.dataset.pmtab; P.sel = null; P.dsel = null; P.undo = false; X.render(); }; });
     $$('[data-pmpre]').forEach((b) => { b.onclick = () => { if (b.dataset.pmpre === 'custom' && P.pre !== 'custom') { const [f, t] = range(P); P.from = f; P.to = t; } P.pre = b.dataset.pmpre; P.sel = null; X.render(); }; });
     const fr = q('#pm-from'), to = q('#pm-to');
     const pickDates = () => { if (fr.value && to.value && to.value >= fr.value) { P.from = fr.value; P.to = to.value; X.render(); } };
@@ -287,24 +383,58 @@ export function makePayments(X) {
     $$('[data-pmopen]').forEach((r) => { r.onclick = () => { P.sel = r.dataset.pmopen; P.vo = null; X.render(); }; });
     const px = q('#pm-px'); if (px) px.onclick = () => { P.sel = null; P.vo = null; X.render(); };
     const vb = q('#pm-void'); if (vb) vb.onclick = () => { P.vo = { id: P.sel, why: '' }; X.render(); const w = q('#pm-vwhy'); if (w) w.focus(); };
+    const bk = q('#pm-back'); if (bk) bk.onclick = () => { P.vo = { id: P.sel, why: '', back: true }; X.render(); const w = q('#pm-vwhy'); if (w) w.focus(); };
     const vw = q('#pm-vwhy'); if (vw) vw.oninput = () => { P.vo.why = vw.value; };
     const vn = q('#pm-vno'); if (vn) vn.onclick = () => { P.vo = null; X.render(); };
     const vy = q('#pm-vyes');
     if (vy) vy.onclick = async () => {
-      if (!P.vo.why.trim()) { q('#pm-verr').textContent = 'Say why it’s void. It goes in History.'; return; }
+      const back = !!P.vo.back;
+      if (!P.vo.why.trim()) { q('#pm-verr').textContent = back ? 'Say why it came back. It goes in History.' : 'Say why it’s void. It goes in History.'; return; }
       vy.disabled = true;
-      try { const r = await db.paymentVoid(A.cid, P.vo.id, P.vo.why); P.vo = null; P.data = null; P.key = ''; X.say('✓ Payment ' + r.number + ' is void'); X.render(); }
+      try {
+        const r = back ? await db.paymentReturned(A.cid, P.vo.id, P.vo.why) : await db.paymentVoid(A.cid, P.vo.id, P.vo.why);
+        P.vo = null; reset();
+        X.say(back ? '✓ Check #' + r.check_no + ' came back · ' + $(r.amount) + ' is owed again by ' + r.customer.name : '✓ Payment ' + r.number + ' is void'); X.render();
+      }
       catch (e) { vy.disabled = false; q('#pm-verr').textContent = e.message; }
     };
-    $$('[data-pmdep]').forEach((b) => { b.onclick = async () => {
-      b.disabled = true;
-      try { const r = await db.paymentDeposit(A.cid, b.dataset.pmdep); P.data = null; P.key = ''; X.say('✓ Check ' + r.check_no + ' deposited · ' + $(r.amount) + ' taken off what ' + r.customer.name + ' owes'); X.render(); }
-      catch (e) { b.disabled = false; X.say(e.message, true); }
-    }; });
-    const dp = q('#pm-dep'); if (dp) dp.onchange = () => { P.dep = dp.value; X.render(); };
-    const pr = q('#pm-dprint'); if (pr) pr.onclick = printDeposit;
+    $$('[data-pmdepopen]').forEach((b) => { b.onclick = () => openDeposit(b.dataset.pmdepopen, b.dataset.pmdepdate); });
+    // Take to the bank
+    $$('[data-bkp]').forEach((c) => { c.onchange = () => { if (c.checked) delete P.off[c.dataset.bkp]; else P.off[c.dataset.bkp] = 1; bankUpd(); }; });
+    const ba = q('#bk-all'); if (ba) ba.onchange = () => { P.off = {}; if (!ba.checked) (P.bank || []).forEach((p) => { P.off[p.id] = 1; }); $$('[data-bkp]').forEach((c) => { c.checked = ba.checked; }); bankUpd(); };
+    const bd = q('#bk-date'); if (bd) bd.onchange = () => { P.made_on = bd.value; };
+    const bpr = q('#bk-print'); if (bpr) bpr.onclick = () => printSlip(null);
+    const mk = q('#bk-make');
+    if (mk) mk.onclick = async () => {
+      const T = ticked(P); if (!T.length) return;
+      P.busy = true; mk.disabled = true;
+      try {
+        const d = await db.depositMake(A.cid, { ids: T.map((p) => p.id), made_on: P.made_on || today() });
+        P.busy = false; P.off = {}; reset(); P.tab = 'deps'; P.dpre = 'month'; P.dsel = d.id; P.undo = false;
+        X.say('✓ Deposit #' + d.number + ' made · ' + $(d.total) + ' · print the slip for the bank'); X.render();
+      } catch (e) { P.busy = false; mk.disabled = false; q('#bk-err').textContent = e.message; }
+    };
+    // Deposits
+    $$('[data-dppre]').forEach((b) => { b.onclick = () => { if (b.dataset.dppre === 'custom' && P.dpre !== 'custom') { const [f, t] = range({ pre: P.dpre }); P.dfrom = f; P.dto = t; } P.dpre = b.dataset.dppre; P.dsel = null; X.render(); }; });
+    const df = q('#dp-from'), dt = q('#dp-to');
+    const dpick = () => { if (df.value && dt.value && dt.value >= df.value) { P.dfrom = df.value; P.dto = dt.value; X.render(); } };
+    if (df) df.onchange = dpick; if (dt) dt.onchange = dpick;
+    $$('[data-dpopen]').forEach((r) => { r.onclick = () => { P.dsel = r.dataset.dpopen; P.undo = false; X.render(); }; });
+    const dx = q('#dp-x'); if (dx) dx.onclick = () => { P.dsel = null; P.undo = false; X.render(); };
+    const cur = () => P.deps && P.deps.rows.concat(P.deps.waiting).find((d) => d.id === P.dsel);
+    const dpp = q('#dp-print'); if (dpp) dpp.onclick = () => printSlip(cur());
+    const set = async (p, msg) => {
+      try { const d = await db.depositSet(A.cid, P.dsel, p); reset(); P.undo = false; P.dsel = d.id; if (msg) X.say(msg(d)); X.render(); }
+      catch (e) { const er = q('#dp-err'); if (er) er.textContent = e.message; }
+    };
+    const rf = q('#dp-ref'); if (rf) rf.onchange = () => set({ action: 'ref', bank_ref: rf.value }, (d) => '✓ Bank receipt # saved on deposit #' + d.number);
+    const un = q('#dp-undo'); if (un) un.onclick = () => { P.undo = true; X.render(); };
+    const un2 = q('#dp-undo2'); if (un2) un2.onclick = () => set({ action: 'undo' }, (d) => '✓ Deposit #' + d.number + ' undone · its payments are back in Take to the bank');
+    const cf = q('#dp-conf'); if (cf) cf.onclick = () => set({ action: 'confirm' }, (d) => '✓ Deposit #' + d.number + ' confirmed by the bank');
+    const uc = q('#dp-unconf'); if (uc) uc.onclick = () => set({ action: 'unconfirm' }, (d) => 'Deposit #' + d.number + ' is waiting for the bank again');
   }
+  function openDeposit(id, d) { const P = st(); P.tab = 'deps'; P.dpre = 'custom'; P.dfrom = d || today(); P.dto = d || today(); P.dsel = id; P.undo = false; P.deps = null; P.dkey = ''; X.render(); }
   // Open one payment on the Payments page (from a customer's Invoices & payments tab).
-  function show(id, d) { const P = st(); P.tab = 'list'; P.pre = 'custom'; P.from = d || today(); P.to = d || today(); P.sel = id; P.vo = null; P.data = null; P.key = ''; P.q = ''; X.render(); }
-  return { open, modalHtml, bindModal, html, bind, howText, show };
+  function show(id, d) { const P = st(); P.tab = 'list'; P.pre = 'custom'; P.from = d || today(); P.to = d || today(); P.sel = id; P.vo = null; reset(); P.q = ''; X.render(); }
+  return { open, modalHtml, bindModal, html, bind, howText, show, reset, tab: (k) => { const P = st(); P.tab = k; P.sel = null; P.dsel = null; } };
 }

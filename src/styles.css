@@ -526,3 +526,18 @@ h2.mt{margin-top:18px}
 .acst{position:relative;display:inline-block;margin-right:8px}.acst summary{list-style:none;cursor:pointer}.acst summary::-webkit-details-marker{display:none}
 .acstm{position:absolute;right:0;top:calc(100% + 6px);background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:6px;z-index:20;box-shadow:0 8px 24px rgba(15,27,45,.12);min-width:220px}
 .acstm .btn{justify-content:flex-start;width:100%}
+
+/* Phase 3, part 2: bank deposits */
+.bktab tr.bklate td{background:#FFF7EC}
+.bktab .ck{width:34px}
+.bkbar{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.bkbar .sp{flex:1}
+.bkbar .bkdate{margin:0;min-width:150px}
+.dppan .dph{font-size:11px;font-weight:700;color:#5b6676;text-transform:uppercase;letter-spacing:.04em;margin:14px 0 4px}
+.dppan .rowr{flex-wrap:wrap}
+.pmbank{margin-top:10px}
+.pmback{margin-top:10px}
+.ctbar.bkbar{position:sticky;bottom:0;background:#0F1B2D;border-color:#0F1B2D;color:#fff;margin:14px 0 0;align-items:center}
+.ctbar.bkbar .bkdate span{color:#cbd5e1}
+.ctbar.bkbar .btn:not(.amber){color:#0F1B2D}
+.actab td.nw{white-space:nowrap}

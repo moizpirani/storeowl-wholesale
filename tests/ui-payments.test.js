@@ -58,19 +58,39 @@ test('Payments: take one, oldest first, store credit, post-dated, deposit, void,
   $('[data-pmtab="held"]').click(); await tick(); checkTags('post-dated');
   assert.match($('#app').textContent, /4471[\s\S]*Waits/);
   db.S.payments.find((p) => p.check_no === '4471').check_date = '2000-01-01';
-  A.pm.data = null; A.pm.key = ''; $('[data-pmtab="held"]').click(); await tick(10);
-  $('[data-pmdep]').click(); await tick(10);
-  assert.match($('.toast').textContent, /Check 4471 deposited/);
-  $('[data-pmtab="deposit"]').click(); await tick(10); checkTags('deposit');
-  assert.match($('#app').textContent, /To deposit\$235\.00/);
+  A.pm.data = null; A.pm.key = ''; A.pm.bank = null; $('[data-pmtab="held"]').click(); await tick(10);
+  assert.match($('#app').textContent, /Ready to deposit/);
+  $('[data-pmtab="bank"]').click(); await tick(10); checkTags('take to the bank');
+  assert.match($('.kpis').textContent, /Not deposited yet\$235\.00/);
+  assert.equal($$('[data-bkp]').length, 2, 'the cash and the check whose date has come');
+  // Untick the cash: totals change in place, nothing redraws.
+  const cash = $$('[data-bkp]').find((c) => /Cash/.test(c.closest('tr').textContent));
+  cash.checked = false; cash.dispatchEvent(new dom.window.Event('change'));
+  assert.equal($$('[data-bkp]')[0].isConnected, true);
+  assert.match($('#bk-make').textContent, /Make deposit · \$75\.00/);
+  cash.checked = true; cash.dispatchEvent(new dom.window.Event('change'));
+  $('#bk-make').click(); await tick(12);
+  assert.match($('.toast').textContent, /Deposit #1001 made · \$235\.00/);
+  checkTags('deposits');
+  assert.match($('.dppan').textContent, /#4471 Maynardville Fuel Stop[\s\S]*Deposit total\$235\.00/);
+  type('#dp-ref', 'R-9'); pick('#dp-ref', 'R-9'); await tick(10);
+  assert.equal(db.S.deposits[0].bank_ref, 'R-9');
+  assert.equal(db.S.payments.find((p) => p.check_no === '4471').status, 'posted', 'putting it in a deposit counted it');
 
-  // Void the check (it came back).
+  // The check came back from the bank.
   $('[data-pmtab="list"]').click(); await tick(10);
   $$('[data-pmopen]').find((r) => /4471/.test(r.textContent)).click(); await tick();
-  $('#pm-void').click(); await tick(); checkTags('void payment');
-  $('#pm-vyes').click(); await tick(); assert.match($('#pm-verr').textContent, /Say why/);
-  type('#pm-vwhy', 'Check came back'); $('#pm-vyes').click(); await tick(10);
-  assert.match($('.toast').textContent, /Payment 1002 is void/);
+  assert.match($('.ivpan').textContent, /Deposit #1001/);
+  assert.ok(!$('#pm-void'), 'no plain void for a payment in a deposit');
+  $('#pm-back').click(); await tick(); checkTags('check came back');
+  $('#pm-vyes').click(); await tick(); assert.match($('#pm-verr').textContent, /Say why it came back/);
+  type('#pm-vwhy', 'not enough money'); $('#pm-vyes').click(); await tick(10);
+  assert.match($('.toast').textContent, /Check #4471 came back · \$75\.00 is owed again/);
+  $('[data-pmtab="deps"]').click(); await tick(10);
+  assert.match($('#app').textContent, /A check came back/);
+  $('[data-dpopen]').click(); await tick();
+  $('#dp-conf').click(); await tick(10);
+  assert.equal(db.S.deposits[0].status, 'confirmed');
 
   // The customer page: real Owes, payments in the tab.
   $('[data-go="customers"]').click(); await tick(10); $('[data-cuopen]').click(); await tick(10);
@@ -97,4 +117,10 @@ test('Payments: take one, oldest first, store credit, post-dated, deposit, void,
   const p = db.S.payments.find((x) => x.number === 1003);
   assert.equal(p.amount, 30); assert.ok(p.sale_id);
   assert.ok(db.S.applies.some((a) => a.from_pay === p.id && a.amount === 30));
+
+  // Home reminds owners of cash and checks not deposited.
+  $('[data-go="home"]').click(); await tick(10); checkTags('home with bank reminder');
+  assert.match($('.hneed').textContent, /\$30\.00 in cash and checks not deposited/);
+  $('[data-guide="home-needs-bank"]').click(); await tick(10);
+  assert.ok($('[data-pmtab="bank"].on'), 'opens Take to the bank');
 });

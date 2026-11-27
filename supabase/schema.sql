@@ -2048,3 +2048,179 @@ grant execute on function statement_sent(uuid,uuid,jsonb) to authenticated;
 alter table customers drop constraint if exists customers_terms_check;
 alter table customers add constraint customers_terms_check check (terms in ('','cod','advance','net7','net10','net14','net30'));
 alter table customers alter column terms set default '';
+
+-- =====================================================================
+-- Phase 3, part 2: bank deposits (2026-11-27, Moiz approved the pictures)
+-- Cash and check payments wait for the bank until they go in a deposit (the bag taken to the bank). A post-dated check
+-- joins "Take to the bank" on its date; putting it in a deposit is what counts it. A deposit is Made, then Confirmed
+-- (seen on the bank statement), or Undone by a manager before that (its payments wait again). A check that comes back
+-- from the bank is voided with the reason and flagged on the deposit it was in. Card and bank transfer payments reach
+-- the bank by themselves and never go in a deposit.
+-- =====================================================================
+alter table companies add column if not exists next_deposit int not null default 1001;
+
+create table if not exists deposits (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  number int not null,
+  made_on date not null default current_date,
+  status text not null default 'made' check (status in ('made','confirmed','undone')),
+  cash numeric(12,2) not null default 0,
+  checks numeric(12,2) not null default 0,
+  total numeric(12,2) not null default 0,
+  n_checks int not null default 0,
+  bank_ref text not null default '',
+  held_ids uuid[] not null default '{}',      -- post-dated checks this deposit counted (put back to waiting on undo)
+  by_name text not null default '',
+  created_at timestamptz not null default now(),
+  confirmed_at timestamptz,
+  confirmed_by text not null default '',
+  undone_at timestamptz,
+  undone_by text not null default '',
+  unique (company_id, number)
+);
+create index if not exists deposits_company on deposits(company_id, made_on desc);
+alter table deposits enable row level security;
+revoke all on deposits from anon, authenticated;
+
+alter table payments add column if not exists deposit_id uuid references deposits(id);
+alter table payments add column if not exists bounced boolean not null default false;
+create index if not exists payments_bank on payments(company_id) where deposit_id is null and method in ('cash','check');
+
+create or replace function _pay_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(p) - 'company_id' || jsonb_build_object(
+    'customer', jsonb_build_object('id', c.id, 'name', c.name, 'store_no', c.store_no, 'city', c.city),
+    'deposit', (select jsonb_build_object('id', d.id, 'number', d.number, 'made_on', d.made_on, 'status', d.status, 'by', d.by_name) from deposits d where d.id = p.deposit_id),
+    'applied', coalesce((select jsonb_agg(jsonb_build_object('to', a.to_sale, 'number', s.number, 'amount', a.amount, 'from_sale', a.from_sale,
+        'from_number', f.number) order by a.id)
+      from pay_applies a left join sales s on s.id = a.to_sale left join sales f on f.id = a.from_sale where a.from_pay = p.id or a.pay_event = p.id), '[]'::jsonb))
+  from payments p join customers c on c.id = p.customer_id where p.id = p_id $$;
+
+-- What can go in a deposit now: cash and checks not in one, counted (or a post-dated check whose date has come).
+create or replace function _bank_ok(p payments) returns boolean language sql stable as $$
+  select p.deposit_id is null and p.method in ('cash','check') and p.amount > 0
+    and (p.status = 'posted' or (p.status = 'held' and p.check_date <= current_date)) $$;
+
+create or replace function bank_todo(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return coalesce((select jsonb_agg(_pay_json(p.id) order by p.received, p.number) from payments p
+    where p.company_id = p_company and _bank_ok(p)), '[]'::jsonb);
+end $$;
+
+create or replace function _dep_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(d) - 'company_id' - 'held_ids' || jsonb_build_object(
+    'came_back', coalesce((select sum(amount) from payments where deposit_id = d.id and bounced), 0),
+    'payments', coalesce((select jsonb_agg(_pay_json(p.id) order by p.method desc, p.received, p.number) from payments p where p.deposit_id = d.id), '[]'::jsonb))
+  from deposits d where d.id = p_id $$;
+
+-- Make a deposit. p = {ids: [payment id], made_on?}
+create or replace function deposit_make(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare who text := _my_name(p_company); ids uuid[]; x payments; did uuid; num int; c numeric := 0; k numeric := 0; nk int := 0; held uuid[] := '{}';
+  md date := coalesce(nullif(p->>'made_on','')::date, current_date);
+begin
+  perform _need(p_company, 'staff');
+  select coalesce(array_agg(distinct v::uuid), '{}') into ids from jsonb_array_elements_text(coalesce(p->'ids','[]'::jsonb)) v;
+  if cardinality(ids) = 0 then raise exception 'tick what goes in the deposit'; end if;
+  if md > current_date then raise exception 'the deposit can''t be dated in the future'; end if;
+  for x in select * from payments where id = any(ids) for update loop
+    if x.company_id <> p_company then raise exception 'payment not found'; end if;
+    if not _bank_ok(x) then raise exception 'payment % can''t go in a deposit any more', x.number; end if;
+    if x.method = 'cash' then c := c + x.amount; else k := k + x.amount; nk := nk + 1; end if;
+    if x.status = 'held' then held := held || x.id; end if;
+  end loop;
+  if (select count(*) from payments where id = any(ids)) <> cardinality(ids) then raise exception 'payment not found'; end if;
+  update companies set next_deposit = next_deposit + 1 where id = p_company returning next_deposit - 1 into num;
+  insert into deposits(company_id, number, made_on, cash, checks, total, n_checks, held_ids, by_name)
+    values (p_company, num, md, c, k, c + k, nk, held, who) returning id into did;
+  update payments set deposit_id = did where id = any(ids);
+  update payments set status = 'posted', deposited_at = now(), deposited_by = who where id = any(held);
+  perform _log(p_company, 'deposit made', jsonb_build_object('deposit', did, 'number', num, 'cash', c, 'checks', k, 'total', c + k, 'payments', cardinality(ids)));
+  return _dep_json(did);
+end $$;
+
+-- Deposits made between two dates, newest first; plus every deposit still waiting for the bank.
+create or replace function deposits_list(p_company uuid, p_from date, p_to date) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'pick the dates'; end if;
+  return jsonb_build_object(
+    'rows', coalesce((select jsonb_agg(_dep_json(id) order by made_on desc, number desc) from deposits where company_id = p_company and made_on between p_from and p_to), '[]'::jsonb),
+    'waiting', coalesce((select jsonb_agg(_dep_json(id) order by made_on, number) from deposits where company_id = p_company and status = 'made'), '[]'::jsonb));
+end $$;
+
+-- p = {action: 'ref', bank_ref} (staff) · {action: 'confirm' | 'unconfirm' | 'undo'} (managers)
+create or replace function deposit_set(p_company uuid, p_id uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare d deposits; who text := _my_name(p_company); act text := coalesce(p->>'action','');
+begin
+  perform _need(p_company, case when act = 'ref' then 'staff' else 'manager' end);
+  select * into d from deposits where id = p_id and company_id = p_company for update;
+  if d.id is null then raise exception 'deposit not found'; end if;
+  if act = 'ref' then
+    if d.status = 'undone' then raise exception 'this deposit was undone'; end if;
+    update deposits set bank_ref = left(trim(coalesce(p->>'bank_ref','')), 40) where id = d.id;
+  elsif act = 'confirm' then
+    if d.status <> 'made' then raise exception 'only a deposit waiting for the bank can be confirmed'; end if;
+    update deposits set status = 'confirmed', confirmed_at = now(), confirmed_by = who where id = d.id;
+    perform _log(p_company, 'deposit confirmed', jsonb_build_object('deposit', d.id, 'number', d.number, 'total', d.total));
+  elsif act = 'unconfirm' then
+    if d.status <> 'confirmed' then raise exception 'this deposit isn''t confirmed'; end if;
+    update deposits set status = 'made', confirmed_at = null, confirmed_by = '' where id = d.id;
+    perform _log(p_company, 'deposit not confirmed after all', jsonb_build_object('deposit', d.id, 'number', d.number));
+  elsif act = 'undo' then
+    if d.status <> 'made' then raise exception 'only a deposit waiting for the bank can be undone'; end if;
+    if exists (select 1 from payments where deposit_id = d.id and bounced) then raise exception 'a check in this deposit came back; it can''t be undone'; end if;
+    update payments set status = 'held', deposited_at = null, deposited_by = '' where id = any(d.held_ids) and status = 'posted';
+    update payments set deposit_id = null where deposit_id = d.id;
+    update deposits set status = 'undone', undone_at = now(), undone_by = who where id = d.id;
+    perform _log(p_company, 'deposit undone', jsonb_build_object('deposit', d.id, 'number', d.number, 'total', d.total));
+  else raise exception 'unknown action'; end if;
+  return _dep_json(d.id);
+end $$;
+
+-- A check that came back from the bank: void with the reason; what it paid is owed again; its deposit shows it.
+create or replace function payment_returned(p_company uuid, p_id uuid, p_why text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x payments; who text := _my_name(p_company); dn int;
+begin
+  perform _need(p_company, 'manager');
+  select * into x from payments where id = p_id and company_id = p_company for update;
+  if x.id is null then raise exception 'payment not found'; end if;
+  if x.method <> 'check' or x.status <> 'posted' or x.deposit_id is null then raise exception 'only a check in a deposit can come back'; end if;
+  if length(trim(coalesce(p_why,''))) = 0 then raise exception 'say why it came back'; end if;
+  update payments set status = 'void', bounced = true, void_at = now(), void_by = who, void_why = 'Check came back: ' || left(trim(p_why), 180) where id = x.id;
+  delete from pay_applies where pay_event = x.id and from_pay is distinct from x.id;
+  select number into dn from deposits where id = x.deposit_id;
+  perform _log(p_company, 'check came back', jsonb_build_object('payment', x.id, 'number', x.number, 'customer', x.customer_id, 'amount', x.amount, 'deposit', dn, 'why', trim(p_why)));
+  return _pay_json(x.id);
+end $$;
+
+-- A payment in a deposit isn't voided by hand: undo the deposit first, or mark the check came back.
+create or replace function payment_void(p_company uuid, p_id uuid, p_why text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x payments; who text := _my_name(p_company); dn int;
+begin
+  perform _need(p_company, 'manager');
+  select * into x from payments where id = p_id and company_id = p_company for update;
+  if x.id is null then raise exception 'payment not found'; end if;
+  if x.status = 'void' then raise exception 'this is already void'; end if;
+  if x.deposit_id is not null then
+    select number into dn from deposits where id = x.deposit_id;
+    raise exception 'it''s in deposit #%: undo the deposit first%', dn, case when x.method = 'check' then ', or mark that the check came back' else '' end;
+  end if;
+  if length(trim(coalesce(p_why,''))) = 0 then raise exception 'say why it''s void'; end if;
+  update payments set status = 'void', void_at = now(), void_by = who, void_why = left(trim(p_why), 200) where id = x.id;
+  delete from pay_applies where pay_event = x.id and from_pay is distinct from x.id;
+  perform _log(p_company, 'payment voided', jsonb_build_object('payment', x.id, 'number', x.number, 'customer', x.customer_id, 'amount', x.amount, 'why', trim(p_why)));
+  return _pay_json(x.id);
+end $$;
+
+revoke execute on function _bank_ok(payments), _dep_json(uuid) from public, anon, authenticated;
+revoke execute on function bank_todo(uuid), deposit_make(uuid,jsonb), deposits_list(uuid,date,date), deposit_set(uuid,uuid,jsonb), payment_returned(uuid,uuid,text) from public, anon;
+grant execute on function bank_todo(uuid), deposit_make(uuid,jsonb), deposits_list(uuid,date,date), deposit_set(uuid,uuid,jsonb), payment_returned(uuid,uuid,text) to authenticated;
