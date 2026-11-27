@@ -212,7 +212,7 @@ export function makeCounter(X) {
   function doneHtml() {
     const d = C().done;
     return '<h1>Counter</h1><div class="card ctdone"><div class="ctok">✓</div><h2>Invoice ' + esc(d.number) + ' posted</h2><p>' + $(d.total) + ' · charged to account</p>' +
-      '<p class="sm">Printing and emailing invoices come next.</p><div class="rowr center"><button class="btn" id="ct-home" data-guide="counter-done-home">Back to Counter</button>' +
+      '<p class="sm">Printing and emailing invoices come next.</p><div class="rowr rowc"><button class="btn" id="ct-home" data-guide="counter-done-home">Back to Counter</button>' +
       '<button class="btn amber" id="ct-next" data-guide="counter-done-next">Next sale</button></div></div>';
   }
 

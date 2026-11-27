@@ -441,7 +441,7 @@ h2.mt{margin-top:18px}
 .ctpan{width:460px;max-width:92vw;margin:0}.ctpan .seg{margin-top:8px}
 .ctdone{max-width:520px;text-align:center;padding:34px}.ctdone h2{font-size:22px}
 .ctok{width:56px;height:56px;border-radius:28px;background:#E6F4F1;color:var(--teal);font-size:28px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
-.rowr.center{justify-content:center}
+.rowr.rowc{justify-content:center}
 .t tr.ctpick{cursor:pointer}.t tr.ctpick:hover td{background:#FAFBFC}
 .t td small{display:block;color:var(--muted);font-size:12.5px}
 .ivpan{min-width:360px}

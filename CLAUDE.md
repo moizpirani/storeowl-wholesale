@@ -130,3 +130,14 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   `_sale_price`, same as `priceSale`), `companies.next_invoice` (from 1001), `sale_save` (suspend | review | complete | cancel), `sales_list`,
   `sale_last`, `unknown_upcs` + `upc_unknown_*`; owes = opening + posted invoices. Still to come: printing (piece 3), returns (piece 4),
   suspend time limit / hide balances settings.
+- **NEXT = Phase 2, piece 3: print + email + EDI (pictures shown 2026-11-26, NOT approved to build yet; pictures in claude.ai Project doc
+  `claude/next-steps.md`):** printed invoice on Letter, always "Page 1 of 1" (wholesaler licenses / MSA ID at top; Sold to; store licenses on
+  file, only filled ones; Terms + "Charged to account", NO due date; Sold by = real name; lines grouped by category with subtotals: photo,
+  item #, full UPC + real UPC-A barcode, size "Carton · 10 packs", ordered / shipped + "N short", old price above break price; Cigarettes vs
+  All other summary; TN "Tennessee Dept of Revenue Tobacco Tax Paid Invoice" line; owed before + "You owe as of"; editable policy footer;
+  optional signature line). After Complete sale: tick boxes **Print** (N copies) · **Email the invoice** (PDF) · **Email EDI** (X12 810 +
+  spreadsheet, pack barcode / pack count / pack cost per line) → "Send and start next sale". Settings → Invoices tab (your license numbers,
+  show photos / barcodes / what the store owes / signature line, tax line, footer, after a sale default, copies). Customer → Details:
+  Invoice email + EDI email + what this store normally gets. Recommended (waiting on Moiz): sender invoices@storeowl.app with reply-to the
+  wholesaler (DNS records in Cloudflare), Letter only, Items "Needs you: No single-pack barcode", Resend on Invoices. Also uncommitted-then-
+  committed here: done-screen fix (`.rowr.center` clashed with `.center{min-height:100vh}` → `rowc`).
