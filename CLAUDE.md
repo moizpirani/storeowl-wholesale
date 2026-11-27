@@ -130,8 +130,9 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   `_sale_price`, same as `priceSale`), `companies.next_invoice` (from 1001), `sale_save` (suspend | review | complete | cancel), `sales_list`,
   `sale_last`, `unknown_upcs` + `upc_unknown_*`; owes = opening + posted invoices. Still to come: printing (piece 3), returns (piece 4),
   suspend time limit / hide balances settings.
-- **Phase 2, piece 3 = print + email + EDI (built 2026-11-27, Moiz: "go" after the pictures; NOT on test yet: the schema section
-  "Phase 2, piece 3" isn't on the test database and the email sender isn't set up):** `src/invoice.js` (pure, shared with the website):
+- **Phase 2, piece 3 = print + email + EDI (built 2026-11-27, Moiz: "go" after the pictures; ON TEST since 2026-11-26, Moiz: "put it on test";
+  migration `phase2_print_email_edi_2026_11_27` on the test database; Vercel env SMTP_HOST / PORT / USER (= the Back Office's sender
+  account moiz@storeowl.app) + MAIL_FROM invoices@storeowl.app + SMTP_PASS (added by Moiz); invoices@ alias + Send mail as done by Moiz):** `src/invoice.js` (pure, shared with the website):
   `invModel` (one model for print / PDF / email), `invoiceHtml` + `PRINT_CSS` (Letter; classes all start `iv-` so app CSS can't clash),
   `invoicePdf` (copied PDF maker `src/pdf.js`; more pages when long), `barcodeSvg` (real UPC-A; a wrong check digit = no barcode),
   **EDI = Moiz's "just like Hackney": the fixed-width A / B lines StoreOwl Back Office's `parseUcs` reads** (checked against that reader):
