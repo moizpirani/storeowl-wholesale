@@ -153,3 +153,12 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   <invoices@storeowl.app>, Reply-To = company email); vercel.json no longer rewrites `/api/`. **To go on test:** run the schema section
   on the test database; Vercel env `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` (MAIL_FROM optional); invoices@storeowl.app as
   a Google Workspace alias + "Send mail as" on the SMTP account. Tests: `invoice`, `ui-invoice`.
+- **Licenses off the Counter for employees (built 2026-11-26, Moiz: "employees don't need to see that", approved the pictures, then
+  "put it on test"; no database change; ON TEST since 2026-11-26):** the Counter's orange license box and "Why sell anyway?" are gone for
+  everyone. Employees see nothing about licenses; owners / managers get only the chip `#ct-lic` "Licenses: N to fix ›" (guide
+  `counter-sale-licenses`) that opens the customer's Licenses tab (`X.openCust(id, 'licenses')`). Every suspend / review / complete sends
+  `lic_reason` = "Sold with: <problems>" by itself (`licAuto`), so History still records it. Settings → License rules lost the
+  warn / ask / off choice (one line instead; `lic_mode` is no longer sent; the database still accepts it). Home: "Needs you" card
+  (managers+, `home-needs-licenses`) → Customers filter **Licenses to fix** (`S.f = 'lic'`, `licProblems`; `A.cuF` when Customers wasn't
+  opened yet). Also fixed: the `.bx` input style squashed the Home boxes (now `input.bx, select.bx`). Pictures only: `VITE_FAKE_ROLE=staff`
+  makes the demo's member staff.
