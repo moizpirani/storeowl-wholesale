@@ -2,7 +2,7 @@
 // A pretend backend (makeFake) has the same calls, for tests and pictures.
 
 import { cleanStates } from './states.js';
-import { DEFAULT_SETTINGS, sizeUpcs, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck, openItems, todayIso } from './rules.js';
+import { DEFAULT_SETTINGS, sizeUpcs, recvCheck, recvCosts, recvLineTotal, movePrice, sells as sellsZ, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck, openItems, todayIso } from './rules.js';
 
 export function makeDb(sb) {
   async function rpc(name, args) {
@@ -117,7 +117,15 @@ export function makeDb(sb) {
     sendStatements(id, o) { return post({ company: id, statements: o }); },
     paymentReceipt: (id, pay) => rpc('payment_receipt', { p_company: id, p_id: pay }),
     receiptSent: (id, pay, p) => rpc('receipt_sent', { p_company: id, p_id: pay, p }),
-    sendReceipt(id, pay) { return post({ company: id, receipt: pay }); }
+    sendReceipt(id, pay) { return post({ company: id, receipt: pay }); },
+    // Phase 4: suppliers, receiving supplier invoices, stock.
+    suppliers: (id) => rpc('suppliers_list', { p_company: id }),
+    supplierPut: (id, p) => rpc('supplier_put', { p_company: id, p }),
+    receivings: (id) => rpc('receivings_list', { p_company: id }),
+    receivingSave: (id, p) => rpc('receiving_save', { p_company: id, p }),
+    receivingCosts: (id, r, mode) => rpc('receiving_costs', { p_company: id, p_id: r, p_mode: mode }),
+    receivingUndo: (id, r) => rpc('receiving_undo', { p_company: id, p_id: r }),
+    stock: (id) => rpc('stock_list', { p_company: id })
   };
   async function post(body) {
     const { data } = await sb.auth.getSession();
@@ -147,7 +155,7 @@ export function plain(m) {
 export function makeFake(opts) {
   opts = opts || {};
   let me = opts.signedIn ? { email: opts.signedIn } : null;
-  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [], payments: [], applies: [], deposits: [] };
+  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [], payments: [], applies: [], deposits: [], suppliers: [], supItems: [], recvs: [] };
   let n = 0;
   const id = () => 'c' + (++n);
   const uid = (email) => 'u-' + email;
@@ -168,6 +176,14 @@ export function makeFake(opts) {
   }
   const copy = (o) => JSON.parse(JSON.stringify(o));
   const nz = (v) => (v === '' || v == null ? null : Number(v));
+  function recvOut(r) { const o = copy(r); delete o.company_id; const sp = S.suppliers.find((x) => x.id === r.supplier_id); o.supplier = sp ? sp.name : ''; return o; }
+  function applyCosts(ch, mode) {
+    ch.forEach((c) => S.items.forEach((it) => it.sizes.forEach((z) => {
+      if (z.id !== c.size_id) return;
+      Object.keys(z.prices || {}).forEach((k) => { z.prices[k] = movePrice(z.prices[k], c.before, c.after, mode); });
+      z.cost = c.after; it.updated_at = new Date().toISOString();
+    })));
+  }
   function itemOut(it, cost) {
     const o = copy(it); delete o.company_id; delete o.import_id; o.cost_hidden = !cost;
     if (!cost) o.sizes.forEach((z) => { z.cost = null; });
@@ -518,6 +534,102 @@ export function makeFake(opts) {
       x.undone_at = new Date().toISOString();
       log(cid, 'import taken back', { import: imp, kind: x.kind, file: x.file, removed: before - list.length });
       return { removed: before - list.length };
+    },
+
+    // ----- Phase 4: suppliers, receiving, stock (same rules as the database) -----
+    async suppliers(cid) {
+      need(cid, 'staff');
+      return S.suppliers.filter((x) => x.company_id === cid).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())).map((x) => {
+        const last = S.recvs.filter((r) => r.supplier_id === x.id && r.status === 'received').sort((a, b) => (b.inv_date + b.received_at > a.inv_date + a.received_at ? 1 : -1))[0];
+        return Object.assign(copy(x), { last: last ? { number: last.number, date: last.inv_date } : null,
+          items: S.supItems.filter((y) => y.supplier_id === x.id).map((y) => ({ size_id: y.size_id, their_no: y.their_no, unit: y.unit, per: y.per, last_cost: y.last_cost, last_at: y.last_at })) });
+      });
+    },
+    async supplierPut(cid, p) {
+      need(cid, p.id ? 'manager' : 'staff');
+      const nm = String(p.name || '').trim();
+      if (!nm) throw new Error('Type the supplier’s name');
+      if (S.suppliers.some((x) => x.company_id === cid && x.name.trim().toLowerCase() === nm.toLowerCase() && x.id !== p.id)) throw new Error(nm + ' is already a supplier');
+      let x = p.id && S.suppliers.find((y) => y.id === p.id && y.company_id === cid);
+      if (p.id && !x) throw new Error('Supplier not found');
+      if (!x) { x = { id: id(), company_id: cid }; S.suppliers.push(x); log(cid, 'supplier added', { supplier: x.id, name: nm }); }
+      else log(cid, 'supplier changed', { supplier: x.id, name: nm });
+      Object.assign(x, { name: nm, phone: String(p.phone || '').trim(), email: String(p.email || '').trim(), note: String(p.note || '').trim() });
+      return (await api.suppliers(cid)).find((y) => y.id === x.id);
+    },
+    async receivings(cid) {
+      need(cid, 'staff');
+      return S.recvs.filter((r) => r.company_id === cid && r.status !== 'deleted').sort((a, b) => ((b.received_at || b.updated_at) > (a.received_at || a.updated_at) ? 1 : -1)).map(recvOut);
+    },
+    async receivingSave(cid, p) {
+      const m = need(cid, 'staff'), who = m.name || me.email, act = p.action || 'draft';
+      let r = p.id && S.recvs.find((x) => x.id === p.id && x.company_id === cid);
+      if (p.id && !r) throw new Error('Invoice not found');
+      if (r && r.status !== 'draft') throw new Error('This invoice is already ' + r.status);
+      if (act === 'delete') { if (!r) throw new Error('Nothing to delete'); r.status = 'deleted'; log(cid, 'supplier invoice deleted', { receiving: r.id, number: r.number }); return recvOut(r); }
+      if (!['draft', 'receive'].includes(act)) throw new Error('Unknown action');
+      if (!S.suppliers.some((x) => x.id === p.supplier_id && x.company_id === cid)) throw new Error('Pick the supplier');
+      const items = S.items.filter((x) => x.company_id === cid);
+      const lines = (p.lines || []).map((l) => {
+        let f = null; items.forEach((it) => it.sizes.forEach((z) => { if (z.id === l.size_id) f = { it, z }; }));
+        if (!f) throw new Error('An item on this invoice isn’t in your list any more');
+        if (!sellsZ(f.z)) throw new Error(f.it.name + ' (' + f.z.name + ') isn’t a size you sell — receive it as the size you sell');
+        const o = { size_id: f.z.id, item_id: f.it.id, name: f.it.name, size: f.z.name, n: f.z.n, unit: String(l.unit || '').trim() || f.z.name, per: +l.per || 1,
+          qty: +l.qty, cost: l.cost === '' || l.cost == null ? null : +l.cost, their_no: String(l.their_no || '').trim().slice(0, 30) };
+        o.line = recvLineTotal(o); return o;
+      });
+      const now = new Date().toISOString();
+      if (!r) { r = { id: id(), company_id: cid, status: 'draft', how: 'typed', by_name: who, created_at: now, received_at: null, received_by: '', costs: 'none', cost_changes: [], undone_at: null, undone_by: '' }; S.recvs.push(r); }
+      Object.assign(r, { supplier_id: p.supplier_id, number: String(p.number || '').trim().slice(0, 40), inv_date: p.inv_date || todayIso(),
+        inv_total: p.inv_total === '' || p.inv_total == null ? null : +p.inv_total, how: p.how || r.how, lines, total: Math.round(lines.reduce((a, l) => a + l.line, 0) * 100) / 100, updated_at: now });
+      if (act === 'draft') { log(cid, 'supplier invoice saved for later', { receiving: r.id, number: r.number, total: r.total }); return recvOut(r); }
+      const bad = recvCheck(Object.assign({}, r, { lines: p.lines }), items); if (bad) { throw new Error(bad.replace(/\.$/, '')); }
+      if (S.recvs.some((x) => x !== r && x.company_id === cid && x.supplier_id === r.supplier_id && x.number === r.number && x.status === 'received')) throw new Error('Invoice ' + r.number + ' from this supplier was already received');
+      const ch = recvCosts(lines, items);
+      lines.forEach((l) => {
+        let y = S.supItems.find((x) => x.supplier_id === r.supplier_id && x.size_id === l.size_id);
+        if (!y) { y = { supplier_id: r.supplier_id, size_id: l.size_id, company_id: cid, their_no: '' }; S.supItems.push(y); }
+        Object.assign(y, { their_no: l.their_no || y.their_no, unit: l.unit, per: l.per, last_cost: l.cost == null ? y.last_cost : l.cost, last_at: now });
+      });
+      if (!ch.length) r.costs = 'none';
+      else if (m.role === 'owner' && p.prices) { applyCosts(ch, p.prices); r.costs = 'done'; r.cost_changes = { mode: p.prices, list: ch }; }
+      else { r.costs = 'waiting'; r.cost_changes = { mode: null, list: ch }; }
+      Object.assign(r, { status: 'received', received_at: now, received_by: who });
+      log(cid, 'supplier invoice received', { receiving: r.id, number: r.number, total: r.total, costs: r.costs });
+      return recvOut(r);
+    },
+    async receivingCosts(cid, rid, mode) {
+      need(cid, 'owner');
+      const r = S.recvs.find((x) => x.id === rid && x.company_id === cid);
+      if (!r) throw new Error('Invoice not found');
+      if (r.costs !== 'waiting') throw new Error('These costs aren’t waiting any more');
+      if (mode === 'keep') { r.costs = 'kept'; r.cost_changes = Object.assign({}, r.cost_changes, { mode: 'keep' }); }
+      else { const ch = recvCosts(r.lines, S.items.filter((x) => x.company_id === cid)); applyCosts(ch, mode); r.costs = 'done'; r.cost_changes = { mode, list: ch }; }
+      log(cid, 'supplier invoice costs checked', { receiving: r.id, number: r.number, mode });
+      return recvOut(r);
+    },
+    async receivingUndo(cid, rid) {
+      const m = need(cid, 'manager');
+      const r = S.recvs.find((x) => x.id === rid && x.company_id === cid);
+      if (!r) throw new Error('Invoice not found');
+      if (r.status !== 'received') throw new Error('Only a received invoice can be taken back');
+      Object.assign(r, { status: 'undone', undone_at: new Date().toISOString(), undone_by: m.name || me.email, costs: r.costs === 'waiting' ? 'kept' : r.costs });
+      log(cid, 'supplier invoice taken back', { receiving: r.id, number: r.number, total: r.total });
+      return recvOut(r);
+    },
+    // Stock worked out from what's been received and sold (the database keeps the same thing as a list of moves).
+    async stock(cid) {
+      need(cid, 'staff');
+      const on = {}, aside = {}, last = {};
+      const nOf = (sid) => { for (const it of S.items) for (const z of it.sizes) if (z.id === sid) return { it, n: z.n }; return null; };
+      S.recvs.filter((r) => r.company_id === cid && r.status === 'received').forEach((r) => r.lines.forEach((l) => { on[l.item_id] = (on[l.item_id] || 0) + l.qty * l.per * l.n; last[l.item_id] = r.received_at; }));
+      S.sales.filter((s) => s.company_id === cid).forEach((s) => (s.lines || []).forEach((l) => {
+        const f = l.size_id && nOf(l.size_id); if (!f || l.other) return;
+        if (s.status === 'posted' && (s.kind !== 'credit' || ['wrong', 'notordered'].includes(l.reason))) on[f.it.id] = (on[f.it.id] || 0) - l.shipped * f.n;
+        if (s.kind !== 'credit' && ['suspended', 'review'].includes(s.status)) aside[f.it.id] = (aside[f.it.id] || 0) + l.shipped * f.n;
+      }));
+      return S.items.filter((it) => it.company_id === cid).map((it) => ({ item_id: it.id, on_hand: on[it.id] || 0, set_aside: aside[it.id] || 0,
+        can_sell: Math.max((on[it.id] || 0) - (aside[it.id] || 0), 0), moved: last[it.id] || null }));
     },
     // ----- Counter -----
     async saleSave(cid, p) {

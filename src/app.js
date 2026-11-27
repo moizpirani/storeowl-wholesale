@@ -10,6 +10,7 @@ import { makeCatalog } from './catalog.js';
 import { makeImport } from './importui.js';
 import { makeCounter } from './counter.js';
 import { makePayments } from './payments.js';
+import { makeStock } from './stock.js';
 import { custIssues, itemIssues, settingsOf, todayIso, licName, licProblems } from './rules.js';
 
 const IC = {
@@ -19,6 +20,7 @@ const IC = {
   review: 'M6 3h12v18H6zM9 12l2 2 4-4M9 7h6',
   customers: 'M3 21V10l9-6 9 6v11M9 21v-6h6v6',
   items: 'M3 7l9-4 9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10',
+  stock: 'M3 21V8l9-5 9 5v13M7 21v-8h10v8M7 17h10',
   payments: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM6 10v4M18 10v4',
   compliance: 'M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6zM8.5 12l2.5 2.5 4.5-5',
   reports: 'M4 20V11M10 20V5M16 20v-6M2 20h20',
@@ -34,6 +36,7 @@ export const MENU = [
   { k: 'invoices', n: 'Invoices' },
   { k: 'customers', n: 'Customers' },
   { k: 'items', n: 'Items' },
+  { k: 'stock', n: 'Stock' },
   { k: 'payments', n: 'Payments' },
   { k: 'compliance', n: 'Compliance', phase: 7 },
   { k: 'reports', n: 'Reports', phase: 4 },
@@ -74,6 +77,7 @@ export function startApp(root, db) {
   const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c), openPay: (o) => pay.open(o) });
   const pay = makePayments({ A, db, root, esc, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), reloadCust: (id) => cat.reloadCust(id),
     openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c) });
+  const stk = makeStock({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
@@ -265,6 +269,7 @@ export function startApp(root, db) {
     else if (A.view === 'invoices') page = ctr.invoicesHtml();
     else if (A.view === 'barcodes') page = ctr.bcHtml();
     else if (A.view === 'payments') page = pay.html();
+    else if (A.view === 'stock') page = stk.html();
     else page = '<h1>' + m.n + '</h1><div class="card soon"><b>Not built yet</b><span>Comes in Phase ' + m.phase + ' of the build plan.</span></div>';
     const toast = A.msg ? '<div class="toast' + (A.bad ? ' bad' : '') + '" role="status">' + esc(A.msg) + '<button id="toast-x" aria-label="Close" data-guide="common-message-close">×</button></div>' : '';
     return rail + '<div class="shell">' + top + '<main class="page">' + page + '</main></div>' + pay.modalHtml() + toast;
@@ -276,6 +281,8 @@ export function startApp(root, db) {
       if (b.dataset.go === 'counter' && A.ct && A.ct.step !== 'sale') { A.ct.step = 'home'; A.ct.done = null; }
       if (b.dataset.go === 'review') A.rv = null;
       if (b.dataset.go === 'invoices') A.ivs = null;
+      if (A.view === 'stock' && A.sk && A.sk.ed && (A.sk.ed.lines.length || A.sk.ed.number) && !window.confirm('This supplier invoice isn’t saved. Leave it? (Save for later keeps it.)')) return;
+      if (b.dataset.go === 'stock' && A.sk) { A.sk.ed = null; A.sk.done = null; A.sk.cw = null; A.sk.list = null; A.sk.stock = null; }
       if (b.dataset.go === 'payments' && A.pm) { A.pm.data = null; A.pm.key = ''; A.pm.sel = null; }
       const C = A.cu;
       if (C && C.open && (C.open === 'new' || JSON.stringify(C.ed) !== C.orig || (C.led && JSON.stringify(C.led) !== C.lorig)) && !window.confirm('Your changes to this customer aren’t saved. Leave without saving?')) return;
@@ -298,6 +305,7 @@ export function startApp(root, db) {
     if (A.view === 'invoices') ctr.bindInvoices();
     if (A.view === 'barcodes') ctr.bindBc();
     if (A.view === 'payments') pay.bind();
+    if (A.view === 'stock') stk.bind();
     pay.bindModal();
     ctr.loadReviewCount();
   }

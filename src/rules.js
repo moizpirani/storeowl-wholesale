@@ -403,3 +403,44 @@ export function fillOldest(invoices, amount) {
   let left = r2(Number(amount) || 0);
   return invoices.map((x) => { const take = r2(Math.min(left, x.open)); left = r2(left - take); return take; });
 }
+
+// ---------- Receiving supplier invoices (Phase 4) ----------
+// A receiving line: {size_id, unit, per, qty, cost, their_no}. qty of the supplier's unit; per = how many of the size
+// are in their unit (Case = 10 cartons → per 10); cost = one of their unit. Same numbers as the database (_recv_lines).
+export const recvLineTotal = (l) => Math.round((+l.cost || 0) * (+l.qty || 0) * 100) / 100;
+export function recvTotal(lines) { return Math.round((lines || []).reduce((a, l) => a + recvLineTotal(l), 0) * 100) / 100; }
+// Plain-words problem before receiving, or ''.
+export function recvCheck(r, items) {
+  if (!r.supplier_id) return 'Pick the supplier.';
+  if (!String(r.number || '').trim()) return 'Type the invoice # from their invoice.';
+  if (r.inv_total === '' || r.inv_total == null || isNaN(r.inv_total)) return 'Type the invoice total from the bottom of their invoice.';
+  if (!(r.lines || []).length) return 'Add at least one item.';
+  for (const l of r.lines) {
+    const f = findSizeIn(items, l.size_id);
+    if (!f) return 'An item on this invoice isn’t in your list any more.';
+    if (!sells(f.z)) return f.it.name + ' (' + f.z.name + ') isn’t a size you sell.';
+    if (!(Number.isInteger(+l.qty) && +l.qty >= 0) || String(l.qty).trim() === '') return 'How many ' + f.it.name + ' came? Type a whole number.';
+    if (l.cost !== '' && l.cost != null && (isNaN(l.cost) || +l.cost < 0)) return 'The cost of ' + f.it.name + ' isn’t a number.';
+  }
+  const t = recvTotal(r.lines);
+  if (Math.round(t * 100) !== Math.round(+r.inv_total * 100)) return 'The lines add up to $' + money(t) + ' but the invoice says $' + money(+r.inv_total) + '. Find the line that’s off.';
+  return '';
+}
+export function findSizeIn(items, sizeId) { for (const it of items || []) for (const z of it.sizes || []) if (z.id === sizeId) return { it, z }; return null; }
+// The cost changes an invoice brings, for every size you sell of each item on it (the database's _recv_costs):
+// after = the invoice's cost per smallest unit × the size's n. The last line wins when an item is on it twice.
+export function recvCosts(lines, items) {
+  const cu = {};
+  (lines || []).forEach((l) => { const f = findSizeIn(items, l.size_id); if (f && l.cost !== '' && l.cost != null && +l.qty > 0) cu[f.it.id] = { it: f.it, v: +l.cost / ((+l.per || 1) * f.z.n) }; });
+  const out = [];
+  Object.values(cu).sort((a, b) => a.it.name.localeCompare(b.it.name)).forEach(({ it, v }) => sellSizes(it).forEach((z) => {
+    const after = Math.round(v * z.n * 10000) / 10000;
+    if (z.cost == null || Math.abs(+z.cost - after) > 0.00005) out.push({ item_id: it.id, name: it.name, size_id: z.id, size: z.name, n: z.n, before: z.cost == null ? null : +z.cost, after, prices: z.prices || {} });
+  }));
+  return out;
+}
+// A price after a cost change: same = add the change, margin = keep the % over cost, none = as it is.
+export function movePrice(price, before, after, mode) {
+  if (price == null || mode === 'none' || before == null || !(+before > 0)) return price;
+  return Math.round((mode === 'same' ? +price + (after - before) : +price * after / before) * 100) / 100;
+}
