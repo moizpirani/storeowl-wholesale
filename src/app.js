@@ -68,7 +68,7 @@ export function startApp(root, db) {
   const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
     render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k) });
   const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
-  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f) });
+  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), replaceCo: (c) => replaceCo(c) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
@@ -325,7 +325,7 @@ export function startApp(root, db) {
 
   // ----- Settings: Company · States · People · History -----
   function settingsHtml() {
-    const tabs = [['company', 'Company'], ['states', 'States'], ['levels', 'Price levels'], ['licenses', 'License rules'], ['people', 'People']].concat(isMgr() ? [['history', 'History']] : []);
+    const tabs = [['company', 'Company'], ['states', 'States'], ['levels', 'Price levels'], ['licenses', 'License rules'], ['invoices', 'Invoices'], ['people', 'People']].concat(isMgr() ? [['history', 'History']] : []);
     if (!tabs.some((t) => t[0] === A.stab)) A.stab = 'company';
     const bar = '<nav class="tabs">' + tabs.map((t) => '<button class="' + (A.stab === t[0] ? 'on' : '') + '" data-stab="' + t[0] + '" data-guide="settings-tab">' + t[1] + '</button>').join('') + '</nav>';
     let body = '';
@@ -334,6 +334,7 @@ export function startApp(root, db) {
     if (A.stab === 'people') body = peopleHtml();
     if (A.stab === 'levels') body = cat.levelsHtml();
     if (A.stab === 'licenses') body = cat.licRulesHtml();
+    if (A.stab === 'invoices') body = ctr.invSettingsHtml();
     if (A.stab === 'history') body = historyHtml();
     return '<h1>Settings</h1>' + bar + body;
   }
@@ -344,6 +345,7 @@ export function startApp(root, db) {
     if (A.stab === 'people') bindPeople();
     if (A.stab === 'levels') cat.bindLevels();
     if (A.stab === 'licenses') cat.bindLicRules();
+    if (A.stab === 'invoices') ctr.bindInvSettings();
     if (A.stab === 'history') bindHistory();
   }
   function saveBar(dirty, guideBase) {

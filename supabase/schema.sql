@@ -1351,3 +1351,171 @@ end $$;
 revoke execute on function _my_name(uuid), _sale_price(uuid,int,jsonb), _sale_json(uuid) from public, anon, authenticated;
 revoke execute on function sale_save(uuid,jsonb), sales_list(uuid,text), sale_last(uuid,uuid), upc_unknown_scan(uuid,text,uuid), upc_unknown_list(uuid), upc_unknown_done(uuid,text,text,uuid) from public, anon;
 grant execute on function sale_save(uuid,jsonb), sales_list(uuid,text), sale_last(uuid,uuid), upc_unknown_scan(uuid,text,uuid), upc_unknown_list(uuid), upc_unknown_done(uuid,text,text,uuid) to authenticated;
+
+-- =====================================================================
+-- Phase 2, piece 3: printing, emailing and the EDI file (2026-11-27)
+-- Every line keeps the item # and the SINGLE pack's barcode when it's sold, because the EDI file carries the
+-- barcode the store's register scans (a carton line still sends the pack barcode + packs in a carton).
+-- What went out is kept on the sale (sales.sends). Emails go from the website (api/send.js), never the browser.
+-- =====================================================================
+alter table customers add column if not exists edi_email text not null default '';
+alter table customers add column if not exists acct_no text not null default '';   -- this store's customer # (EDI file), digits ≤ 6
+alter table customers add column if not exists gets jsonb not null default '{}'::jsonb; -- {print, email, edi}: what this store normally gets
+alter table sales add column if not exists sends jsonb not null default '[]'::jsonb;  -- [{kind print|email|edi, to, ok, err, by, at}]
+
+create or replace function _sale_price(p_company uuid, p_level int, p_lines jsonb) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r jsonb; n_in int; n_ok int;
+begin
+  n_in := jsonb_array_length(coalesce(p_lines, '[]'::jsonb));
+  with l as (
+    select t.ord, (t.x->>'size_id')::uuid sid,
+      greatest(coalesce((t.x->>'ordered')::int, 0), 0) ordered, greatest(coalesce((t.x->>'shipped')::int, 0), 0) shipped
+    from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) with ordinality t(x, ord)),
+  j as (
+    select l.*, z.name zname, z.n zn, z.upc, z.prices, z.breaks, i.id iid, i.name iname, i.category, i.unit, i.item_no,
+      coalesce((select y.upc from item_sizes y where y.item_id = i.id and y.n = 1 and y.upc <> '' order by y.pos limit 1), '') single_upc,
+      case when trim(i.break_group) <> '' then 'g:' || lower(trim(i.break_group)) || '|' || lower(trim(z.name)) else 's:' || z.id::text end gk
+    from l join item_sizes z on z.id = l.sid and z.company_id = p_company join items i on i.id = z.item_id),
+  g as (select gk, sum(shipped) gq from j group by gk),
+  p as (
+    select j.*, g.gq, _num(j.prices -> (p_level::text)) price,
+      coalesce((select max(_num(b->'off')) from jsonb_array_elements(j.breaks) b where (b->>'min')::int <= g.gq), 0) off
+    from j join g using (gk)),
+  q as (select p.*, round(p.price - p.off, 2) unit_price from p)
+  select jsonb_build_object(
+    'lines', coalesce(jsonb_agg(jsonb_build_object('size_id', sid, 'item_id', iid, 'name', iname, 'size', zname, 'n', zn, 'unit_name', unit, 'upc', upc, 'item_no', item_no, 'single_upc', single_upc,
+      'category', category, 'ordered', ordered, 'shipped', shipped, 'price', price, 'off', off, 'unit_price', unit_price,
+      'total', round(unit_price * shipped, 2), 'group_qty', gq) order by ord), '[]'::jsonb),
+    'total', coalesce(sum(round(unit_price * shipped, 2)), 0), 'units', coalesce(sum(shipped), 0), 'n', count(*),
+    'noprice', (select iname || ' (' || zname || ')' from q q2 where q2.price is null limit 1))
+  into r from q;
+  if (r->>'n')::int <> n_in then raise exception 'an item on this sale isn''t in your list any more'; end if;
+  if r->>'noprice' is not null then raise exception '% has no price for this customer''s level', r->>'noprice'; end if;
+  return r;
+end $$;
+
+create or replace function customer_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare cid uuid := nullif(p->>'id','')::uuid; before jsonb; e text; e2 text; lv int; isnew boolean := cid is null;
+begin
+  perform _need(p_company, 'manager');
+  perform _levels_ensure(p_company);
+  if (isnew or p ? 'name') and length(trim(coalesce(p->>'name',''))) = 0 then raise exception 'type the customer''s name'; end if;
+  e := lower(trim(coalesce(p->>'email','')));
+  if e <> '' and e !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'the email doesn''t look right'; end if;
+  e2 := lower(trim(coalesce(p->>'edi_email','')));
+  if e2 <> '' and e2 !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'the EDI email doesn''t look right'; end if;
+  if regexp_replace(coalesce(p->>'acct_no',''), '\s', '', 'g') !~ '^[0-9]{0,6}$' then raise exception 'the customer # for the EDI file is numbers only, at most 6'; end if;
+  if p ? 'level' then lv := (p->>'level')::int;
+    if not exists (select 1 from price_levels where company_id = p_company and n = lv) then raise exception 'pick a price level'; end if; end if;
+  if _num(p->'credit_limit') < 0 then raise exception 'the credit limit can''t be below zero'; end if;
+  if isnew then
+    insert into customers(company_id, name, level) values (p_company, trim(p->>'name'),
+      coalesce(lv, (select (settings->>'default_level')::int from companies where id = p_company), (select min(n) from price_levels where company_id = p_company)))
+      returning id into cid;
+  else
+    if not exists (select 1 from customers where id = cid and company_id = p_company) then raise exception 'customer not found'; end if;
+    before := _cust_json(cid) - 'licenses';
+  end if;
+  update customers set
+    name = case when p ? 'name' then trim(p->>'name') else name end,
+    store_no = case when p ? 'store_no' then trim(coalesce(p->>'store_no','')) else store_no end,
+    phone = case when p ? 'phone' then trim(coalesce(p->>'phone','')) else phone end,
+    email = case when p ? 'email' then e else email end,
+    addr = case when p ? 'addr' then trim(coalesce(p->>'addr','')) else addr end,
+    city = case when p ? 'city' then trim(coalesce(p->>'city','')) else city end,
+    state = case when p ? 'state' then coalesce(_clean_state(p->>'state'),'') else state end,
+    zip = case when p ? 'zip' then trim(coalesce(p->>'zip','')) else zip end,
+    contacts = case when p ? 'contacts' then coalesce((select jsonb_agg(jsonb_build_object('name', trim(coalesce(x->>'name','')), 'role', trim(coalesce(x->>'role','')), 'phone', trim(coalesce(x->>'phone',''))))
+      from jsonb_array_elements(p->'contacts') x where trim(coalesce(x->>'name','') || coalesce(x->>'phone','')) <> ''), '[]'::jsonb) else contacts end,
+    level = coalesce(lv, level),
+    terms = case when p ? 'terms' then p->>'terms' else terms end,
+    credit_limit = case when p ? 'credit_limit' then _num(p->'credit_limit') else credit_limit end,
+    tobacco = case when p ? 'tobacco' then (p->>'tobacco')::boolean else tobacco end,
+    delivery = case when p ? 'delivery' then trim(coalesce(p->>'delivery','')) else delivery end,
+    route = case when p ? 'route' then trim(coalesce(p->>'route','')) else route end,
+    rep = case when p ? 'rep' then trim(coalesce(p->>'rep','')) else rep end,
+    ship_to = case when p ? 'ship_to' then trim(coalesce(p->>'ship_to','')) else ship_to end,
+    edi_email = case when p ? 'edi_email' then e2 else edi_email end,
+    acct_no = case when p ? 'acct_no' then regexp_replace(coalesce(p->>'acct_no',''), '\s', '', 'g') else acct_no end,
+    gets = case when p ? 'gets' then coalesce((select jsonb_object_agg(k, (v)::boolean) from jsonb_each_text(p->'gets') x(k, v) where k in ('print','email','edi') and v in ('true','false')), '{}'::jsonb) else gets end,
+    since = case when p ? 'since' then nullif(p->>'since','')::date else since end,
+    active = case when p ? 'active' then (p->>'active')::boolean else active end,
+    updated_at = now()
+  where id = cid;
+  perform _opening_put(p_company, cid, p);
+  perform _log(p_company, case when isnew then 'customer added' else 'customer changed' end,
+    jsonb_build_object('customer', cid, 'name', (select name from customers where id = cid), 'before', before));
+  return customer_get(p_company, cid);
+end $$;
+
+create or replace function company_settings_set(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s jsonb := '{}'::jsonb; before jsonb; st text; ks jsonb; r text := _need(p_company, 'manager');
+begin
+  select settings into before from companies where id = p_company;
+  if p ? 'lic_mode' then
+    if p->>'lic_mode' not in ('warn','ask','off') then raise exception 'pick only warn, ask for a manager''s OK, or don''t warn at the Counter'; end if;
+    if p->>'lic_mode' = 'off' and r <> 'owner' then raise exception 'only owners can turn off the warning at the Counter'; end if;
+    s := s || jsonb_build_object('lic_mode', p->>'lic_mode'); end if;
+  if p ? 'lic_need' then
+    if jsonb_typeof(p->'lic_need') <> 'object' then raise exception 'pick licenses for each state'; end if;
+    for st, ks in select * from jsonb_each(p->'lic_need') loop
+      if not exists (select 1 from company_states where company_id = p_company and state = st) then raise exception 'you don''t sell in %', st; end if;
+      if jsonb_typeof(ks) <> 'array' or exists (select 1 from jsonb_array_elements_text(ks) k where k not in ('resale','location','tobacco','vapor','hemp','beer'))
+        then raise exception 'pick licenses from the list'; end if;
+    end loop;
+    s := s || jsonb_build_object('lic_need', p->'lic_need'); end if;
+  if p ? 'remind_days' then
+    if (p->>'remind_days')::int not between 0 and 120 then raise exception 'reminders can be 0 to 120 days ahead'; end if;
+    s := s || jsonb_build_object('remind_days', (p->>'remind_days')::int); end if;
+  if p ? 'default_level' then
+    if not exists (select 1 from price_levels where company_id = p_company and n = (p->>'default_level')::int) then raise exception 'pick a price level'; end if;
+    s := s || jsonb_build_object('default_level', (p->>'default_level')::int); end if;
+  if p ? 'inv' then
+    if jsonb_typeof(p->'inv') <> 'object' then raise exception 'invoice settings look wrong'; end if;
+    if length(coalesce(p->'inv'->>'lic','')) > 600 or length(coalesce(p->'inv'->>'footer','')) > 600 or length(coalesce(p->'inv'->>'tax_text','')) > 120
+      then raise exception 'that text is too long for the invoice'; end if;
+    if coalesce((p->'inv'->>'copies')::int, 1) not between 1 and 5 then raise exception 'print 1 to 5 copies'; end if;
+    s := s || jsonb_build_object('inv', (select jsonb_object_agg(k, v) from jsonb_each(p->'inv') x(k, v)
+      where k in ('lic','msa','photos','barcodes','owes','sign','tax_line','tax_text','footer','after','copies'))); end if;
+  update companies set settings = settings || s where id = p_company;
+  perform _log(p_company, 'settings changed', jsonb_build_object('before', before, 'after', s));
+  return _company_json(p_company);
+end $$;
+
+-- Everything an invoice needs, for printing, the PDF and the EDI file (also used by the website to send it).
+create or replace function invoice_data(p_company uuid, p_sale uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s sales;
+begin
+  perform _need(p_company, 'staff');
+  select * into s from sales where id = p_sale and company_id = p_company;
+  if s.id is null then raise exception 'invoice not found'; end if;
+  if s.status <> 'posted' then raise exception 'only a completed sale is an invoice'; end if;
+  return jsonb_build_object('sale', _sale_json(s.id), 'customer', _cust_json(s.customer_id), 'company', _company_json(p_company));
+end $$;
+
+-- Write down what was sent (or printed). Keeps the newest 50.
+create or replace function sale_sent(p_company uuid, p_sale uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare k text := p->>'kind'; who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'staff');
+  if k not in ('print','email','edi','pdf','file') then raise exception 'unknown kind'; end if;
+  if not exists (select 1 from sales where id = p_sale and company_id = p_company and status = 'posted') then raise exception 'invoice not found'; end if;
+  update sales set sends = (select coalesce(jsonb_agg(x order by ord), '[]'::jsonb) from (
+      select x, ord from jsonb_array_elements(sends || jsonb_build_array(jsonb_build_object('kind', k, 'to', left(coalesce(p->>'to',''), 200),
+        'ok', coalesce((p->>'ok')::boolean, true), 'err', left(coalesce(p->>'err',''), 300), 'by', who, 'at', now()))) with ordinality t(x, ord)
+      order by ord desc limit 50) z)
+  where id = p_sale;
+  if k in ('email','edi') then
+    perform _log(p_company, case when coalesce((p->>'ok')::boolean, true) then 'invoice emailed' else 'invoice email failed' end,
+      jsonb_build_object('sale', p_sale, 'kind', k, 'to', p->>'to', 'err', nullif(p->>'err','')));
+  end if;
+  return _sale_json(p_sale);
+end $$;
+
+revoke execute on function invoice_data(uuid,uuid), sale_sent(uuid,uuid,jsonb) from public, anon;
+grant execute on function invoice_data(uuid,uuid), sale_sent(uuid,uuid,jsonb) to authenticated;

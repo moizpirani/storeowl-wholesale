@@ -130,6 +130,7 @@ export function itemIssues(it, levels) {
   const out = [];
   const sizes = it.sizes || [];
   if (!sizes.some((z) => cleanUpc(z.upc))) out.push({ k: 'upc', t: 'No UPC' });
+  else if (!singleUpc(it)) out.push({ k: 'pack', t: 'No single-pack barcode' });
   if (it.cost_hidden !== true && sizes.some((z) => z.cost == null)) out.push({ k: 'cost', t: 'No cost' });
   if (sizes.some((z) => (levels || []).some((l) => z.prices == null || z.prices[l.n] == null))) out.push({ k: 'price', t: 'Price missing' });
   if (sizes.some((z) => z.cost != null && (levels || []).some((l) => z.prices && z.prices[l.n] != null && z.prices[l.n] < z.cost))) out.push({ k: 'below', t: 'Price below cost' });
@@ -138,6 +139,10 @@ export function itemIssues(it, levels) {
 
 // The size an item is listed by: the one people buy most often is usually the carton/box, so the first size.
 export function mainSize(it) { return (it.sizes || [])[0] || null; }
+// The single pack / can / each: the size with 1 unit in it. Its barcode is the one the store's register scans,
+// so it's the barcode sent in the EDI file (the store's back office matches on it).
+export function singleSize(it) { return (it.sizes || []).find((z) => +z.n === 1) || null; }
+export function singleUpc(it) { const z = singleSize(it); return z && cleanUpc(z.upc) ? cleanUpc(z.upc) : ''; }
 export function sizeLine(z, unit) {
   if (!z) return '';
   const u = unit || 'each';
@@ -265,6 +270,7 @@ export function priceSale(lines, items, level) {
     if (tot != null) total += tot;
     count += sh;
     return { size_id: z.id, item_id: it.id, name: it.name, size: z.name, n: z.n, unit_name: it.unit, upc: z.upc, category: it.category, photo_url: it.photo_url || '',
+      item_no: it.item_no || '', single_upc: singleUpc(it),
       sizes: (it.sizes || []).map((y) => ({ id: y.id, name: y.name })), ordered: +l.ordered || 0, shipped: sh, price, off, unit_price: unit, total: tot,
       group_qty: q, group: (it.break_group || '').trim(), missing: price == null ? 'price' : '' };
   });

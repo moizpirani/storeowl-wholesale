@@ -10,10 +10,13 @@ import {
   plural, todayIso, shortDate, initials, mainSize
 } from './rules.js';
 
+import { makeInvUi } from './invui.js';
+
 const WHY = ['Price check', 'Item not in StoreOwl', 'Short on stock', 'License', 'Credit or terms', 'Other'];
 
 export function makeCounter(X) {
   const { A, db, root, esc, opt } = X;
+  const iv = makeInvUi(Object.assign({}, X, { money: (v) => '$' + money(v), when: X.when || ((t) => String(t || '')) }));
   const q = (s) => root.querySelector(s);
   const $$ = (s) => Array.from(root.querySelectorAll(s));
   const $ = (v) => (v == null ? '—' : '$' + money(v));
@@ -209,13 +212,7 @@ export function makeCounter(X) {
     return '';
   }
 
-  function doneHtml() {
-    const d = C().done;
-    return '<h1>Counter</h1><div class="card ctdone"><div class="ctok">✓</div><h2>Invoice ' + esc(d.number) + ' posted</h2><p>' + $(d.total) + ' · charged to account</p>' +
-      '<p class="sm">Printing and emailing invoices come next.</p><div class="rowr rowc"><button class="btn" id="ct-home" data-guide="counter-done-home">Back to Counter</button>' +
-      '<button class="btn amber" id="ct-next" data-guide="counter-done-next">Next sale</button></div></div>';
-  }
-
+  function doneHtml() { return iv.doneHtml(C()); }
   function resumeHtml() {
     const l = C().susp;
     const rows = !l ? '<tr><td colspan="5" class="empty">Loading…</td></tr>' : !l.length ? '<tr><td colspan="5" class="empty">No suspended sales.</td></tr>' :
@@ -340,8 +337,9 @@ export function makeCounter(X) {
     g('#ct-resume', () => { S.step = 'resume'; loadSusp(true); X.render(); });
     g('#ct-invoices', () => { A.view = 'invoices'; X.render(); });
     g('#ct-back', () => { S.step = S.sale && S.sale.lines.length ? 'sale' : 'home'; X.render(); });
-    g('#ct-home', () => reset());
-    g('#ct-next', () => { reset(); S.step = 'find'; A.ct.step = 'find'; X.render(); setTimeout(() => { const b = q('#ct-cq'); if (b) b.focus(); }, 0); });
+    if (S.step === 'done' && S.done) {
+      iv.bindDone(S, () => { reset(); A.ct.step = 'find'; X.render(); setTimeout(() => { const b = q('#ct-cq'); if (b) b.focus(); }, 0); }, () => reset());
+    }
     $$('[data-ctopen]').forEach((e) => { e.onclick = () => {
       const s = (C().susp || []).find((x) => x.id === e.dataset.ctopen);
       if (!s) return;
@@ -429,7 +427,7 @@ export function makeCounter(X) {
       q('#ct-post').disabled = true;
       const r = await save('complete', { lic_reason: warn.length ? S.lic.trim() : '' });
       if (!r) { const b = q('#ct-post'); if (b) b.disabled = false; return; }
-      const susp = S.susp; A.ct = fresh(); A.ct.susp = susp; A.ct.step = 'done'; A.ct.done = { number: r.number, total: r.total }; X.say('');
+      const susp = S.susp; A.ct = fresh(); A.ct.susp = susp; A.ct.step = 'done'; A.ct.done = { sale: r }; X.say('');
       A.rvn = null; A.ivs = null; A.stoday = null; loadSusp(true); X.load(true); X.render();
     });
   }
@@ -482,7 +480,7 @@ export function makeCounter(X) {
       '<p class="sm">' + esc(sel.customer.name) + ' · ' + esc(shortDate(sel.invoice_date, true)) + ' · charged to account</p>' +
       '<table class="t"><tbody>' + sel.lines.map((l) => '<tr><td><b>' + esc(l.name) + '</b><small>' + esc(l.size) + (l.shipped < l.ordered ? ' · ' + (l.ordered - l.shipped) + ' short' : '') + '</small></td><td class="n">' + l.shipped + ' × ' + $(l.unit_price) + '</td><td class="n"><b>' + $(l.total) + '</b></td></tr>').join('') +
       '<tr><td><b>Total</b></td><td></td><td class="n"><b>' + $(sel.total) + '</b></td></tr></tbody></table>' +
-      (sel.lic_reason ? '<p class="sm">Sold without a license: ' + esc(sel.lic_reason) + '</p>' : '') + '<p class="sm">Printing and emailing come next.</p></aside>' : '';
+      (sel.lic_reason ? '<p class="sm">Sold without a license: ' + esc(sel.lic_reason) + '</p>' : '') + iv.panelHtml(sel) + '</aside>' : '';
     return '<div class="hdr"><h1>Invoices<span class="count">' + I.list.length + '</span></h1></div>' +
       '<div class="bar"><input class="inp q" id="iv-q" type="search" placeholder="Invoice #, customer or date (2026-11-27)" value="' + esc(I.q) + '" data-guide="invoices-list-search"></div>' +
       (sel ? '<div class="wrap2">' + table + panel + '</div>' : table);
@@ -497,7 +495,8 @@ export function makeCounter(X) {
     const iq = q('#iv-q'); iq.oninput = () => { A.ivs.q = iq.value; q('#iv-rows').innerHTML = invRows(); rows(); };
     function rows() { $$('[data-ivrow]').forEach((r) => { r.onclick = () => { A.ivs.sel = r.dataset.ivrow; X.render(); }; }); }
     rows();
-    const x = q('#iv-x'); if (x) x.onclick = () => { A.ivs.sel = null; X.render(); };
+    const x = q('#iv-x'); if (x) x.onclick = () => { A.ivs.sel = null; A.ivp = null; X.render(); };
+    const sel = A.ivs.sel && A.ivs.list.find((s) => s.id === A.ivs.sel); if (sel) iv.bindPanel(sel);
   }
 
   // ---------- Items → Barcodes to add ----------
@@ -569,5 +568,6 @@ export function makeCounter(X) {
     const bx = q('#bc-cancel'); if (bx) bx.onclick = () => { A.bcp = null; X.render(); };
   }
 
-  return { html, bind, reviewHtml, bindReview, invoicesHtml, bindInvoices, bcHtml, bindBc, dirty, loadReviewCount };
+  return { html, bind, reviewHtml, bindReview, invoicesHtml, bindInvoices, bcHtml, bindBc, dirty, loadReviewCount,
+    invSettingsHtml: () => iv.settingsHtml(), bindInvSettings: () => iv.bindSettings() };
 }

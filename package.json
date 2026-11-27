@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.0",
+    "nodemailer": "^6.10.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

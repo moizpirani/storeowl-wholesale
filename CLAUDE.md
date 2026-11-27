@@ -130,14 +130,25 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   `_sale_price`, same as `priceSale`), `companies.next_invoice` (from 1001), `sale_save` (suspend | review | complete | cancel), `sales_list`,
   `sale_last`, `unknown_upcs` + `upc_unknown_*`; owes = opening + posted invoices. Still to come: printing (piece 3), returns (piece 4),
   suspend time limit / hide balances settings.
-- **NEXT = Phase 2, piece 3: print + email + EDI (pictures shown 2026-11-26, NOT approved to build yet; pictures in claude.ai Project doc
-  `claude/next-steps.md`):** printed invoice on Letter, always "Page 1 of 1" (wholesaler licenses / MSA ID at top; Sold to; store licenses on
-  file, only filled ones; Terms + "Charged to account", NO due date; Sold by = real name; lines grouped by category with subtotals: photo,
-  item #, full UPC + real UPC-A barcode, size "Carton · 10 packs", ordered / shipped + "N short", old price above break price; Cigarettes vs
-  All other summary; TN "Tennessee Dept of Revenue Tobacco Tax Paid Invoice" line; owed before + "You owe as of"; editable policy footer;
-  optional signature line). After Complete sale: tick boxes **Print** (N copies) · **Email the invoice** (PDF) · **Email EDI** (X12 810 +
-  spreadsheet, pack barcode / pack count / pack cost per line) → "Send and start next sale". Settings → Invoices tab (your license numbers,
-  show photos / barcodes / what the store owes / signature line, tax line, footer, after a sale default, copies). Customer → Details:
-  Invoice email + EDI email + what this store normally gets. Recommended (waiting on Moiz): sender invoices@storeowl.app with reply-to the
-  wholesaler (DNS records in Cloudflare), Letter only, Items "Needs you: No single-pack barcode", Resend on Invoices. Also uncommitted-then-
-  committed here: done-screen fix (`.rowr.center` clashed with `.center{min-height:100vh}` → `rowc`).
+- **Phase 2, piece 3 = print + email + EDI (built 2026-11-27, Moiz: "go" after the pictures; NOT on test yet: the schema section
+  "Phase 2, piece 3" isn't on the test database and the email sender isn't set up):** `src/invoice.js` (pure, shared with the website):
+  `invModel` (one model for print / PDF / email), `invoiceHtml` + `PRINT_CSS` (Letter; classes all start `iv-` so app CSS can't clash),
+  `invoicePdf` (copied PDF maker `src/pdf.js`; more pages when long), `barcodeSvg` (real UPC-A; a wrong check digit = no barcode),
+  **EDI = Moiz's "just like Hackney": the fixed-width A / B lines StoreOwl Back Office's `parseUcs` reads** (checked against that reader):
+  A = customer # (6) + invoice # (10) + MMDDYY + ±total cents (9) + customer #; B = the SINGLE pack's UPC without check digit (11, blank
+  when there is none — never the carton's) + name (24) + item # (7 digits; a steady made-up one when theirs isn't 1–7 digits, never 99…)
+  + case cost cents (6) + "01" + packs in the case (6) + ±cases (4) + "00000001"; no C lines yet (no taxes / fees). Customer # =
+  `customers.acct_no`, else a digits-only store #. `ediProblems`: no customer # / too long blocks; no pack barcode only warns. File
+  `LOC <acct> <MMDDYY> <inv>.txt`, subject "<company> Invoices <acct>". The spreadsheet (pack barcode, packs, pack cost) is a download
+  only (a .csv in the email could look like an unknown file to a store's back office). `src/invui.js`: after Complete sale "Send it" =
+  Print (copies) · Email the invoice (PDF to the customer's email) · Email the EDI file (to `edi_email`, problems in orange) → "Send and
+  start next sale"; ticks start from the customer's `gets` else Settings → Invoices `after`. Invoices panel: the same ticks + Send / Send
+  again, Download PDF · EDI file · Spreadsheet, "What went out" (`sales.sends`). Settings → **Invoices** tab (license numbers, MSA ID,
+  photos / barcodes / what the store owes / signature / tax paid line + its words, footer, after a sale, copies; sticky bar).
+  Customer → Details: Customer # for EDI, EDI email, "After a sale they get" (Same as Settings / Yes / No). Items: **No single-pack
+  barcode** = Needs you (`singleUpc`: the size with n = 1). Database: `customers.edi_email / acct_no / gets`, `sales.sends`,
+  `_sale_price` lines carry `item_no` + `single_upc`, `invoice_data`, `sale_sent`, `company_settings_set` takes `inv`. Website:
+  **`api/send.js`** (POST with the person's token; runs `invoice_data` / `sale_sent` as them; nodemailer; From "<company>"
+  <invoices@storeowl.app>, Reply-To = company email); vercel.json no longer rewrites `/api/`. **To go on test:** run the schema section
+  on the test database; Vercel env `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` (MAIL_FROM optional); invoices@storeowl.app as
+  a Google Workspace alias + "Send mail as" on the SMTP account. Tests: `invoice`, `ui-invoice`.

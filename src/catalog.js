@@ -465,13 +465,14 @@ export function makeCatalog(X) {
   }
 
   // ----- one customer, full page -----
-  const CU_KEYS = ['name', 'store_no', 'phone', 'email', 'addr', 'city', 'state', 'zip', 'level', 'terms', 'credit_limit', 'tobacco', 'delivery', 'route', 'rep', 'ship_to', 'since', 'active', 'opening'];
+  const CU_KEYS = ['name', 'store_no', 'phone', 'email', 'addr', 'city', 'state', 'zip', 'level', 'terms', 'credit_limit', 'tobacco', 'delivery', 'route', 'rep', 'ship_to', 'since', 'active', 'opening', 'acct_no', 'edi_email'];
   function custDraft(c) {
     const d = {};
     CU_KEYS.forEach((k) => { d[k] = c && c[k] != null ? (k === 'credit_limit' || k === 'opening' ? String(Number(c[k]) || (k === 'opening' ? '0' : c[k])) : c[k]) : ''; });
     if (!c) d.opening = '0';
     if (!c) { d.level = sets().default_level; d.terms = 'cod'; d.tobacco = true; d.active = true; d.state = (co() || {}).home || ''; }
     d.contacts = c ? copy(c.contacts || []) : [{ name: '', role: 'Owner', phone: '' }];
+    d.gets = c && c.gets ? copy(c.gets) : {};
     return d;
   }
   function licDraft(c) {
@@ -598,6 +599,10 @@ export function makeCatalog(X) {
       inp('Credit limit', 'credit_limit', ' inputmode="decimal" placeholder="No limit"') + sel('Buys tobacco', 'tobacco', opt('true', 'Yes', d.tobacco !== false) + opt('false', 'No', d.tobacco === false)) +
       inp('Delivery day', 'delivery', ' list="days"') + inp('Route', 'route') + inp('Sales rep', 'rep') + inp('Customer since', 'since', ' type="date"') +
       inp('Ships to', 'ship_to', ' placeholder="Same as the store"', 'span2') +
+      inp('Customer # for EDI (numbers, up to 6)', 'acct_no', ' inputmode="numeric" maxlength="6"') + inp('EDI email (from their back office)', 'edi_email', ' inputmode="email"') +
+      '<div class="span2 getsrow"><span>After a sale they get</span>' + [['print', 'Printed'], ['email', 'Emailed invoice'], ['edi', 'EDI file']].map(([k, t]) =>
+        '<label class="fld"><span>' + t + '</span><select data-cugets="' + k + '"' + dis + ' data-guide="customers-details-gets-' + k + '">' +
+        opt('', 'Same as Settings', d.gets[k] == null) + opt('true', 'Yes', d.gets[k] === true) + opt('false', 'No', d.gets[k] === false) + '</select></label>').join('') + '</div>' +
       ((co() || {}).role === 'owner' ? inp('Starting balance (owed before StoreOwl)', 'opening', ' inputmode="decimal"', 'span2') : '') + '</div>' +
       '<datalist id="days">' + ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Pick up'].map((x) => '<option value="' + x + '">').join('') + '</datalist>' +
       (!isNew && !ro ? '<label class="chk1"><input type="checkbox" id="cu-active"' + (d.active === false ? '' : ' checked') + ' data-guide="customers-details-active"> Still a customer</label>' : '') +
@@ -772,6 +777,7 @@ export function makeCatalog(X) {
       if (el.tagName === 'SELECT') el.onchange = set; else el.oninput = set;
     });
     $$('[data-cck]').forEach((el) => { el.oninput = () => { const [i, k] = el.dataset.cck.split('|'); d.contacts[+i][k] = el.value; upd(); }; });
+    $$('[data-cugets]').forEach((el) => { el.onchange = () => { const g = Object.assign({}, d.gets), k = el.dataset.cugets; if (el.value === '') delete g[k]; else g[k] = el.value === 'true'; d.gets = g; upd(); }; });
     $$('[data-ccrm]').forEach((b) => { b.onclick = () => { d.contacts.splice(+b.dataset.ccrm, 1); X.render(); }; });
     if (q('#cu-ccadd')) q('#cu-ccadd').onclick = () => { d.contacts.push({ name: '', role: '', phone: '' }); X.render(); };
     if (q('#cu-active')) q('#cu-active').onchange = (e) => { d.active = e.target.checked; upd(); };

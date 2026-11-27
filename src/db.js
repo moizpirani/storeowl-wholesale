@@ -82,7 +82,21 @@ export function makeDb(sb) {
     saleLast: (id, cust) => rpc('sale_last', { p_company: id, p_customer: cust }),
     upcScan: (id, upc, soldAs) => rpc('upc_unknown_scan', { p_company: id, p_upc: upc, p_sold_as: soldAs || null }),
     upcList: (id) => rpc('upc_unknown_list', { p_company: id }),
-    upcDone: (id, upc, action, size) => rpc('upc_unknown_done', { p_company: id, p_upc: upc, p_action: action, p_size: size || null })
+    upcDone: (id, upc, action, size) => rpc('upc_unknown_done', { p_company: id, p_upc: upc, p_action: action, p_size: size || null }),
+    // Invoices (Phase 2, piece 3): everything to print it, write down what went out, and email it from the website.
+    invoiceData: (id, sale) => rpc('invoice_data', { p_company: id, p_sale: sale }),
+    saleSent: (id, sale, p) => rpc('sale_sent', { p_company: id, p_sale: sale, p }),
+    async sendInvoice(id, sale, what) {
+      const { data } = await sb.auth.getSession();
+      const tok = data.session && data.session.access_token;
+      if (!tok) throw new Error('Sign in again to send it.');
+      let r;
+      try { r = await fetch('/api/send', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok }, body: JSON.stringify({ company: id, sale, what }) }); }
+      catch (e) { throw new Error(plain(e.message)); }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'The email couldn’t be sent. Try again.');
+      return j;
+    }
   };
 }
 
@@ -258,6 +272,7 @@ export function makeFake(opts) {
           if (!Array.isArray(p.lic_need[st]) || p.lic_need[st].some((k) => !['resale', 'location', 'tobacco', 'vapor', 'hemp', 'beer'].includes(k))) throw new Error('Pick licenses from the list');
         }
       }
+      if ('inv' in p && (+(p.inv || {}).copies || 1) > 5) throw new Error('Print 1 to 5 copies');
       c.settings = Object.assign({}, c.settings, p);
       log(cid, 'settings changed', { after: p });
       return cj(c);
@@ -321,13 +336,16 @@ export function makeFake(opts) {
       if (p.id && !c) throw new Error('Customer not found');
       const before = c ? copy(c) : null;
       if (!c) {
-        c = { id: id(), company_id: cid, name: '', store_no: '', phone: '', email: '', addr: '', city: '', state: '', zip: '', contacts: [],
+        c = { id: id(), company_id: cid, name: '', store_no: '', phone: '', email: '', edi_email: '', acct_no: '', gets: {}, addr: '', city: '', state: '', zip: '', contacts: [],
           level: Object.assign({}, DEFAULT_SETTINGS, co.settings).default_level, terms: 'cod', credit_limit: null, tobacco: true, delivery: '', route: '', rep: '',
           ship_to: '', since: null, active: true, licenses: [], opening: 0, opening_as_of: null, created_at: new Date().toISOString() };
         S.customers.push(c);
       }
       ['name', 'store_no', 'phone', 'addr', 'city', 'state', 'zip', 'delivery', 'route', 'rep', 'ship_to'].forEach((k) => { if (k in p) c[k] = String(p[k] || '').trim(); });
       if ('email' in p) c.email = String(p.email || '').trim().toLowerCase();
+      if ('edi_email' in p) { const e = String(p.edi_email || '').trim().toLowerCase(); if (e && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw new Error('The EDI email doesn’t look right'); c.edi_email = e; }
+      if ('acct_no' in p) { const a = String(p.acct_no || '').replace(/\s/g, ''); if (!/^\d{0,6}$/.test(a)) throw new Error('The customer # for the EDI file is numbers only, at most 6'); c.acct_no = a; }
+      if ('gets' in p) { c.gets = {}; ['print', 'email', 'edi'].forEach((k) => { if (p.gets && typeof p.gets[k] === 'boolean') c.gets[k] = p.gets[k]; }); }
       if ('contacts' in p) c.contacts = (p.contacts || []).filter((x) => (x.name || x.phone || '').trim()).map((x) => ({ name: (x.name || '').trim(), role: (x.role || '').trim(), phone: (x.phone || '').trim() }));
       if ('level' in p) c.level = +p.level;
       ['terms', 'tobacco', 'active'].forEach((k) => { if (k in p) c[k] = p[k]; });
@@ -476,6 +494,30 @@ export function makeFake(opts) {
       if (!['suspended', 'review', 'posted'].includes(status)) throw new Error('Unknown list');
       if (status === 'review' && m.role === 'staff') throw new Error('Only owners and managers see sales sent for review');
       return S.sales.filter((x) => x.company_id === cid && x.status === status).sort((a, b) => (b.created_at > a.created_at ? 1 : -1)).map(saleOut);
+    },
+    async invoiceData(cid, sale) {
+      need(cid, 'staff');
+      const x = S.sales.find((y) => y.id === sale && y.company_id === cid);
+      if (!x) throw new Error('Invoice not found');
+      if (x.status !== 'posted') throw new Error('Only a completed sale is an invoice');
+      const c = S.customers.find((y) => y.id === x.customer_id);
+      return { sale: saleOut(x), customer: custOut(c), company: cj(S.companies.find((y) => y.id === cid)) };
+    },
+    async saleSent(cid, sale, p) {
+      const m = need(cid, 'staff');
+      const x = S.sales.find((y) => y.id === sale && y.company_id === cid && y.status === 'posted');
+      if (!x) throw new Error('Invoice not found');
+      x.sends = (x.sends || []).concat([{ kind: p.kind, to: p.to || '', ok: p.ok !== false, err: p.err || '', by: m.name || me.email, at: new Date().toISOString() }]).slice(-50);
+      if (p.kind === 'email' || p.kind === 'edi') log(cid, p.ok === false ? 'invoice email failed' : 'invoice emailed', { sale, kind: p.kind, to: p.to });
+      return saleOut(x);
+    },
+    // The pretend website: writes down what would have been emailed (S.mail) instead of sending.
+    async sendInvoice(cid, sale, what) {
+      const d = await this.invoiceData(cid, sale), c = d.customer, out = [];
+      (S.mail = S.mail || []);
+      if (what.email) { const to = c.email; if (!to) throw new Error('This store has no email for invoices'); S.mail.push({ kind: 'email', to, sale }); out.push({ kind: 'email', to, ok: true }); await this.saleSent(cid, sale, { kind: 'email', to }); }
+      if (what.edi) { const to = c.edi_email; if (!to) throw new Error('This store has no EDI email'); S.mail.push({ kind: 'edi', to, sale }); out.push({ kind: 'edi', to, ok: true }); await this.saleSent(cid, sale, { kind: 'edi', to }); }
+      return { sent: out, sale: (await this.invoiceData(cid, sale)).sale };
     },
     async saleLast(cid, cust) {
       need(cid, 'staff');
