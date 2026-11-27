@@ -49,7 +49,7 @@ export function makeCatalog(X) {
     const d = {}; ITEM_KEYS.forEach((k) => { d[k] = it[k] == null ? '' : it[k]; });
     d.id = it.id; d.break_group = it.break_group || '';
     const f2 = (v) => (v == null ? '' : Math.round(v * 100) === v * 100 ? Number(v).toFixed(2) : String(Number(v)));
-    d.sizes = it.sizes.map((z) => ({ id: z.id, name: z.name, n: z.n, upc: z.upc, cost: f2(z.cost),
+    d.sizes = it.sizes.map((z) => ({ id: z.id, name: z.name, n: z.n, upc: z.upc, upcs: (z.upcs || []).slice(), sells: z.sells !== false, cost: f2(z.cost),
       prices: Object.fromEntries(Object.entries(z.prices || {}).map(([k, v]) => [k, f2(v)])),
       breaks: (z.breaks || []).map((b) => ({ min: String(b.min), off: f2(b.off) })) }));
     return d;
@@ -122,13 +122,20 @@ export function makeCatalog(X) {
     const dis = ro ? ' disabled' : '';
     const inp = (lbl, k, extra, wide) => '<label class="f' + (wide ? ' span2' : '') + '"><span>' + lbl + '</span><input data-itk="' + k + '" value="' + esc(d[k]) + '"' + (extra || '') + dis + ' data-guide="items-item-' + k.replace('_', '-') + '"></label>';
     const showMl = d.category === 'vapor', showOz = ['snuff', 'otp', 'pouches', 'cigars'].includes(d.category);
-    const sizes = '<table class="sz"><thead><tr><th>Size</th><th class="n">Holds</th><th>UPC</th>' + (hidden ? '' : '<th class="n">Cost</th>') +
+    const ncol = (hidden ? 0 : 1) + L.length;
+    const upcCell = (z, i) => '<td><input class="bx u" inputmode="numeric" data-zk="' + i + '|upc" value="' + esc(z.upc) + '"' + dis + ' data-guide="items-item-size-upc">' +
+      (z.upcs || []).map((u, j) => '<span class="zup"><input class="bx u" inputmode="numeric" data-zu="' + i + '|' + j + '" value="' + esc(u) + '" placeholder="Another barcode"' + dis + ' data-guide="items-item-size-extra-upc">' +
+        (ro ? '' : '<button class="xb" data-zurm="' + i + '|' + j + '" aria-label="Take this barcode off" data-guide="items-item-size-extra-upc-remove">×</button>') + '</span>').join('') +
+      (ro ? '' : '<button class="lnk sm zupadd" data-zuadd="' + i + '" data-guide="items-item-size-extra-upc-add">+ Another barcode</button>') + '</td>';
+    const sellCell = (z, i) => '<td><label class="sw' + (z.sells !== false ? ' on' : '') + '"><input type="checkbox" data-zsell="' + i + '"' + (z.sells !== false ? ' checked' : '') + dis + ' data-guide="items-item-size-sells"><i></i>' + (z.sells !== false ? 'Yes' : 'No') + '</label></td>';
+    const sizes = '<table class="sz"><thead><tr><th>Size</th><th class="n">Holds</th><th>UPC</th><th>You sell it</th>' + (hidden ? '' : '<th class="n">Cost</th>') +
       L.map((l) => '<th class="n">' + esc(l.name) + '</th>').join('') + (ro ? '' : '<th></th>') + '</tr></thead><tbody>' +
-      d.sizes.map((z, i) => '<tr><td><input class="bx zn" list="sz-names" data-zk="' + i + '|name" value="' + esc(z.name) + '"' + dis + ' data-guide="items-item-size-name"></td>' +
+      d.sizes.map((z, i) => '<tr' + (z.sells === false ? ' class="nosell"' : '') + '><td><input class="bx zn" list="sz-names" data-zk="' + i + '|name" value="' + esc(z.name) + '"' + dis + ' data-guide="items-item-size-name"></td>' +
         '<td class="n"><input class="bx s" inputmode="numeric" data-zk="' + i + '|n" value="' + esc(z.n) + '"' + dis + ' data-guide="items-item-size-holds"></td>' +
-        '<td><input class="bx u" inputmode="numeric" data-zk="' + i + '|upc" value="' + esc(z.upc) + '"' + dis + ' data-guide="items-item-size-upc"></td>' +
+        upcCell(z, i) + sellCell(z, i) +
+        (z.sells === false ? (ncol ? '<td colspan="' + ncol + '" class="znosell">Store’s barcode · for the EDI file only</td>' : '') :
         (hidden ? '' : '<td class="n"><input class="bx m" inputmode="decimal" data-zk="' + i + '|cost" value="' + esc(z.cost) + '"' + dis + ' data-guide="items-item-size-cost"></td>') +
-        L.map((l) => '<td class="n"><input class="bx m" inputmode="decimal" data-zk="' + i + '|p' + l.n + '" value="' + esc(z.prices[l.n] == null ? '' : z.prices[l.n]) + '"' + dis + ' data-guide="items-item-size-price"></td>').join('') +
+        L.map((l) => '<td class="n"><input class="bx m" inputmode="decimal" data-zk="' + i + '|p' + l.n + '" value="' + esc(z.prices[l.n] == null ? '' : z.prices[l.n]) + '"' + dis + ' data-guide="items-item-size-price"></td>').join('')) +
         (ro ? '' : '<td><button class="xb" data-zrm="' + i + '" aria-label="Take this size off" data-guide="items-item-size-remove"' + (d.sizes.length < 2 ? ' disabled' : '') + '>×</button></td>') + '</tr>').join('') +
       '</tbody></table><datalist id="sz-names">' + SIZE_NAMES.map((s) => '<option value="' + s + '">').join('') + '</datalist>' +
       (ro ? '' : '<button class="btn sm addz" id="it-zadd" data-guide="items-item-size-add">+ Add a size</button>');
@@ -346,6 +353,13 @@ export function makeCatalog(X) {
       };
     });
     $$('[data-zrm]').forEach((b) => { b.onclick = () => { d.sizes.splice(+b.dataset.zrm, 1); X.render(); }; });
+    $$('[data-zsell]').forEach((el) => { el.onchange = () => { d.sizes[+el.dataset.zsell].sells = el.checked; X.render(); }; });
+    $$('[data-zu]').forEach((el) => { el.oninput = () => { const [i, j] = el.dataset.zu.split('|').map(Number); d.sizes[i].upcs[j] = el.value; upd(); }; });
+    $$('[data-zurm]').forEach((b) => { b.onclick = () => { const [i, j] = b.dataset.zurm.split('|').map(Number); d.sizes[i].upcs.splice(j, 1); X.render(); }; });
+    $$('[data-zuadd]').forEach((b) => { b.onclick = () => {
+      const i = +b.dataset.zuadd; (d.sizes[i].upcs = d.sizes[i].upcs || []).push(''); X.render();
+      const ins = $$('[data-zu^="' + i + '|"]'); if (ins.length) ins[ins.length - 1].focus();
+    }; });
     $$('[data-bk]').forEach((el) => { el.oninput = () => { const [i, j, k] = el.dataset.bk.split('|'); d.sizes[+i].breaks[+j][k] = el.value; upd(); }; });
     $$('[data-bks]').forEach((el) => { el.onchange = () => {
       const [i, j] = el.dataset.bks.split('|').map(Number), b = d.sizes[i].breaks.splice(j, 1)[0];
@@ -380,7 +394,8 @@ export function makeCatalog(X) {
     const S = A.it, d = S.ed;
     const p = Object.assign({}, d, {
       ml: num(d.ml), oz: num(d.oz), age: +d.age || 0,
-      sizes: d.sizes.map((z) => ({ id: z.id, name: String(z.name || '').trim(), n: +z.n, upc: cleanUpc(z.upc), cost: num(z.cost),
+      sizes: d.sizes.map((z) => ({ id: z.id, name: String(z.name || '').trim(), n: +z.n, upc: cleanUpc(z.upc), sells: z.sells !== false,
+        upcs: (z.upcs || []).map(cleanUpc).filter(Boolean), cost: z.sells === false ? null : num(z.cost),
         prices: Object.fromEntries(levels().map((l) => [l.n, num(z.prices[l.n])]).filter(([, v]) => v != null)),
         breaks: (z.breaks || []).map((b) => ({ min: String(b.min).trim() === '' ? '' : +b.min, off: num(b.off) })) })),
       break_group: String(d.break_group || '').trim()

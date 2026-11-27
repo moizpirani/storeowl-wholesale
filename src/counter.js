@@ -7,7 +7,7 @@
 // customer's Licenses tab, and each sale to a store with a missing / ended license is written in its History by itself.
 
 import {
-  catName, termName, money, dollars, settingsOf, saleWarnings, problemText, priceSale, saleCheck, findUpc, cleanUpc, upcShow,
+  catName, termName, money, dollars, settingsOf, saleWarnings, problemText, priceSale, saleCheck, findUpc, scanSize, sellSizes, cleanUpc, upcShow,
   plural, todayIso, shortDate, initials, mainSize, priceCredit, creditCheck, CREDIT_WHY, creditWhy
 } from './rules.js';
 
@@ -116,6 +116,8 @@ export function makeCounter(X) {
   function noteOf(l) {
     if (l.missing === 'price') return ['or', 'No price for this customer’s level'];
     if (l.missing === 'gone') return ['or', 'Not in your items any more · take it off'];
+    if (l.missing === 'notsold') return ['or', 'Not a size you sell · take it off'];
+    if (C().packNote === l.size_id && C().just === l.size_id) return ['or', 'You scanned the pack barcode · 1 ' + String(l.size).toLowerCase() + ' was added'];
     if (l.shipped < l.ordered) return ['or', (l.ordered - l.shipped) + ' short'];
     if (l.off > 0) return ['ok', 'Quantity break · ' + l.group_qty + (l.group ? ' ' + l.group : '') + ' ' + plural(String(l.size).toLowerCase(), l.group_qty) + ' · $' + money(l.off) + ' off each'];
     if (C().just === l.size_id) return ['ok', 'Just scanned · type how many, then Enter'];
@@ -234,7 +236,7 @@ export function makeCounter(X) {
       if (it.active === false) continue;
       const hay = (it.name + ' ' + (it.item_no || '')).toLowerCase();
       if (!words.every((w) => hay.includes(w))) continue;
-      for (const z of it.sizes || []) { out.push({ it, z }); if (out.length >= 8) return out; }
+      for (const z of sellSizes(it)) { out.push({ it, z }); if (out.length >= 8) return out; }
     }
     return out;
   }
@@ -342,6 +344,7 @@ export function makeCounter(X) {
       db.upcScan(A.cid, S.unk, z && z.it.id).catch(() => { /* still sells */ });
       S.unk = null;
     }
+    if (S.packNote !== sizeId) S.packNote = null;
     S.just = sizeId; S.nq = ''; S.nhi = 0; S.clear = 0;
     X.render();
     const box = q('[data-cto="' + i + '"]') || q('[data-ctcq="' + i + '"]'); if (box) { box.focus(); box.select(); }
@@ -363,8 +366,8 @@ export function makeCounter(X) {
     if (m.length) return addSize(m[Math.min(S.nhi, m.length - 1)].z.id, true);
     const code = cleanUpc(t);
     if (/^[\d\s-]+$/.test(t) && code.length >= 6) {
-      const f = findUpc(A.items, code);
-      if (f) { S.unk = null; return addSize(f.z.id); }
+      const f = scanSize(A.items, code);
+      if (f) { S.unk = null; S.packNote = f.pack ? f.z.id : null; return addSize(f.z.id); }
       S.unk = code; S.nq = '';
       if (!isCredit()) db.upcScan(A.cid, code).catch(() => { /* still sells */ });
       X.render(); focusScan();
@@ -615,9 +618,9 @@ export function makeCounter(X) {
     const pick = (u) => {
       if (!P || P.upc !== u.upc) return '';
       const it = P.item && (A.items || []).find((x) => x.id === P.item);
-      const free = it ? it.sizes.filter((z) => !z.upc) : [];
+      const free = it ? it.sizes : [];
       return '<tr class="bcpick"><td colspan="4"><div class="bcrow">' +
-        (it ? '<b>' + esc(it.name) + '</b>' + (free.length ? '<select class="sel" id="bc-size" data-guide="barcodes-pick-size">' + free.map((z) => opt(z.id, z.name + (z.n > 1 ? ' · ' + z.n : ''), z.id === P.size)).join('') + '</select>' +
+        (it ? '<b>' + esc(it.name) + '</b>' + (free.length ? '<select class="sel" id="bc-size" data-guide="barcodes-pick-size">' + free.map((z) => opt(z.id, z.name + (z.n > 1 ? ' · ' + z.n : '') + (z.upc ? ' · extra barcode' : ''), z.id === P.size)).join('') + '</select>' +
           '<button class="btn sm amber" id="bc-add" data-guide="barcodes-pick-add">Add barcode</button>' : '<span class="miss">Every size already has a barcode. Add a size to the item first.</span>') +
           '<button class="lnk" id="bc-other" data-guide="barcodes-pick-other">Pick another item</button>'
           : '<input class="inp" id="bc-q" placeholder="Type the item name" value="' + esc(P.q) + '" data-guide="barcodes-pick-search"><span id="bc-res" class="bcres">' + bcRes() + '</span>') +
@@ -653,13 +656,13 @@ export function makeCounter(X) {
       X.render();
     };
     const setItem = (itemId, upc) => {
-      const it = (A.items || []).find((x) => x.id === itemId), free = it ? it.sizes.filter((z) => !z.upc) : [];
+      const it = (A.items || []).find((x) => x.id === itemId), free = it ? it.sizes : [];
       A.bcp = { upc, q: '', item: itemId, size: (free[0] || {}).id || null };
     };
     $$('[data-bcto]').forEach((b) => { b.onclick = () => {
       const [upc, item] = b.dataset.bcto.split('|');
       setItem(item, upc);
-      const it = (A.items || []).find((x) => x.id === item), free = it ? it.sizes.filter((z) => !z.upc) : [];
+      const it = (A.items || []).find((x) => x.id === item), free = it ? it.sizes : [];
       if (free.length === 1) return done(upc, 'add', free[0].id);
       X.render();
     }; });

@@ -2490,3 +2490,185 @@ do $do$ begin
         headers := '{"Content-Type":"application/json"}'::jsonb, timeout_milliseconds := 60000) from job_keys k where k.name = 'cron' and k.url <> '' $c$);
   end if;
 end $do$;
+
+
+-- =====================================================================
+-- Phase 4, part 1 (2026-11-27): "You sell it" per size + more than one barcode per size.
+-- A size with sells = false (usually the single pack) is there only so the EDI file can send the store's barcode:
+-- it is never sold, received or shown as a unit, needs no price or cost, and scanning its barcode means the item's
+-- main size you sell (the app adds that, with a note). Extra barcodes (packaging changes) live in size_upcs;
+-- a barcode is unique per company across item_sizes.upc and size_upcs.
+-- =====================================================================
+alter table item_sizes add column if not exists sells boolean not null default true;
+create table if not exists size_upcs (
+  company_id uuid not null references companies(id) on delete cascade,
+  upc text not null check (upc ~ '^[0-9]{6,14}$'),
+  size_id uuid not null references item_sizes(id) on delete cascade,
+  added_at timestamptz not null default now(),
+  primary key (company_id, upc)
+);
+create index if not exists size_upcs_size on size_upcs(size_id);
+alter table size_upcs enable row level security;
+
+-- The item a barcode is already on (main or extra barcode), leaving out one item; null when free.
+create or replace function _upc_owner(p_company uuid, p_upc text, p_except uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce(
+    (select i.name from item_sizes z join items i on i.id = z.item_id where z.company_id = p_company and z.upc = p_upc and z.item_id is distinct from p_except limit 1),
+    (select i.name from size_upcs x join item_sizes z on z.id = x.size_id join items i on i.id = z.item_id
+      where x.company_id = p_company and x.upc = p_upc and z.item_id is distinct from p_except limit 1)) $$;
+
+create or replace function _item_json(p_id uuid, p_cost boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', i.id, 'name', i.name, 'item_no', i.item_no, 'category', i.category, 'nacs', i.nacs,
+    'vendor', i.vendor, 'unit', i.unit, 'ml', i.ml, 'oz', i.oz, 'age', i.age, 'active', i.active, 'updated_at', i.updated_at,
+    'cost_hidden', not p_cost, 'photo', i.photo, 'break_group', i.break_group,
+    'sizes', coalesce((select jsonb_agg(jsonb_build_object('id', z.id, 'name', z.name, 'n', z.n, 'upc', z.upc,
+      'cost', case when p_cost then z.cost end, 'prices', z.prices, 'breaks', z.breaks, 'sells', z.sells,
+      'upcs', coalesce((select jsonb_agg(x.upc order by x.added_at) from size_upcs x where x.size_id = z.id), '[]'::jsonb)) order by z.pos, z.n) from item_sizes z where z.item_id = i.id), '[]'::jsonb))
+  from items i where i.id = p_id $$;
+
+create or replace function item_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x text; iid uuid; z jsonb; v_pos int := 0; keep uuid[] := '{}'; u text; other text; zid uuid; before jsonb; isnew boolean;
+begin
+  perform _need(p_company, 'manager');
+  if length(trim(coalesce(p->>'name',''))) = 0 then raise exception 'type the item name'; end if;
+  if jsonb_array_length(coalesce(p->'sizes','[]'::jsonb)) = 0 then raise exception 'add at least one size'; end if;
+  iid := nullif(p->>'id','')::uuid;
+  isnew := iid is null;
+  if not isnew then
+    if not exists (select 1 from items where id = iid and company_id = p_company) then raise exception 'item not found'; end if;
+    before := _item_json(iid, true);
+    update items set name = trim(p->>'name'), item_no = trim(coalesce(p->>'item_no','')), category = coalesce(nullif(p->>'category',''),'other'),
+      nacs = trim(coalesce(p->>'nacs','')), vendor = trim(coalesce(p->>'vendor','')), unit = coalesce(nullif(trim(p->>'unit'),''),'each'),
+      ml = _num(p->'ml'), oz = _num(p->'oz'), age = coalesce((p->>'age')::int, 0), active = coalesce((p->>'active')::boolean, true),
+      break_group = left(trim(coalesce(p->>'break_group','')), 60), updated_at = now() where id = iid;
+  else
+    insert into items(company_id, name, item_no, category, nacs, vendor, unit, ml, oz, age, break_group)
+      values (p_company, trim(p->>'name'), trim(coalesce(p->>'item_no','')), coalesce(nullif(p->>'category',''),'other'), trim(coalesce(p->>'nacs','')),
+        trim(coalesce(p->>'vendor','')), coalesce(nullif(trim(p->>'unit'),''),'each'), _num(p->'ml'), _num(p->'oz'), coalesce((p->>'age')::int, 0), left(trim(coalesce(p->>'break_group','')), 60))
+      returning id into iid;
+  end if;
+  for z in select * from jsonb_array_elements(p->'sizes') loop
+    if nullif(z->>'id','') is not null then keep := keep || (z->>'id')::uuid; end if;
+    u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+    if length(trim(coalesce(z->>'name',''))) = 0 then raise exception 'every size needs a name, like Carton or Box'; end if;
+    if coalesce((z->>'n')::int, 0) < 1 then raise exception 'how many in a %? Type a whole number, 1 or more', z->>'name'; end if;
+    if u <> '' and length(u) not between 6 and 14 then raise exception 'the UPC on % should be 6 to 14 digits', z->>'name'; end if;
+    perform _breaks_clean(z->'breaks', z->>'name');
+    if u <> '' then
+      other := _upc_owner(p_company, u, iid);
+      if other is not null then raise exception 'UPC % is already on %', u, other; end if;
+    end if;
+    for x in select regexp_replace(e, '\D', '', 'g') from jsonb_array_elements_text(coalesce(z->'upcs','[]'::jsonb)) e loop
+      if x = '' then continue; end if;
+      if length(x) not between 6 and 14 then raise exception 'barcode % should be 6 to 14 digits', x; end if;
+      other := _upc_owner(p_company, x, iid);
+      if other is not null then raise exception 'barcode % is already on %', x, other; end if;
+    end loop;
+  end loop;
+  with a as (select regexp_replace(coalesce(q->>'upc',''), '\D', '', 'g') bc from jsonb_array_elements(p->'sizes') q
+             union all select regexp_replace(e, '\D', '', 'g') from jsonb_array_elements(p->'sizes') q, jsonb_array_elements_text(coalesce(q->'upcs','[]'::jsonb)) e)
+  select count(*) - count(distinct a.bc) into v_pos from a where a.bc <> '';
+  if v_pos > 0 then raise exception 'the same barcode is typed twice on this item'; end if;
+  v_pos := 0;
+  if not exists (select 1 from jsonb_array_elements(p->'sizes') q where coalesce((q->>'sells')::boolean, true)) then
+    raise exception 'at least one size has to be one you sell'; end if;
+  delete from item_sizes where item_id = iid and not (id = any(keep));
+  delete from size_upcs where size_id in (select id from item_sizes where item_id = iid);
+  update item_sizes set upc = '' where item_id = iid;          -- UPCs go back on below, so two sizes can swap them in one save
+  for z in select * from jsonb_array_elements(p->'sizes') loop
+    v_pos := v_pos + 1;
+    u := regexp_replace(coalesce(z->>'upc',''), '\D', '', 'g');
+    zid := nullif(z->>'id','')::uuid;
+    if zid is not null and exists (select 1 from item_sizes where id = zid and item_id = iid) then
+      update item_sizes set pos = v_pos, name = trim(z->>'name'), n = (z->>'n')::int, sells = coalesce((z->>'sells')::boolean, true), cost = _num(z->'cost'), breaks = _breaks_clean(z->'breaks', z->>'name'),
+        prices = coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null), '{}'::jsonb)
+        where id = zid;
+    else
+      insert into item_sizes(item_id, company_id, pos, name, n, upc, cost, breaks, prices, sells)
+        values (iid, p_company, v_pos, trim(z->>'name'), (z->>'n')::int, '', _num(z->'cost'), _breaks_clean(z->'breaks', z->>'name'),
+          coalesce((select jsonb_object_agg(k, _num(v)) from jsonb_each(coalesce(z->'prices','{}'::jsonb)) e(k,v) where _num(v) is not null), '{}'::jsonb), coalesce((z->>'sells')::boolean, true))
+        returning id into zid;
+    end if;
+    update item_sizes set upc = u where id = zid;
+    insert into size_upcs(company_id, upc, size_id)
+      select p_company, b, zid from (select distinct regexp_replace(e, '\D', '', 'g') b from jsonb_array_elements_text(coalesce(z->'upcs','[]'::jsonb)) e) t
+      where b <> '' and b <> u;
+  end loop;
+  perform _log(p_company, case when isnew then 'item added' else 'item changed' end,
+    jsonb_build_object('item', iid, 'name', trim(p->>'name'), 'before', before));
+  return _item_json(iid, true);
+end $$;
+
+create or replace function _sale_price(p_company uuid, p_level int, p_lines jsonb) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r jsonb; n_in int; n_ok int; nsell text;
+begin
+  n_in := jsonb_array_length(coalesce(p_lines, '[]'::jsonb));
+  select i.name || ' (' || z.name || ')' into nsell from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) t(x)
+    join item_sizes z on z.id = (t.x->>'size_id')::uuid and z.company_id = p_company join items i on i.id = z.item_id
+    where not z.sells limit 1;
+  if nsell is not null then raise exception '% isn''t a size you sell (it''s only the store''s barcode)', nsell; end if;
+  with l as (
+    select t.ord, (t.x->>'size_id')::uuid sid,
+      greatest(coalesce((t.x->>'ordered')::int, 0), 0) ordered, greatest(coalesce((t.x->>'shipped')::int, 0), 0) shipped
+    from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) with ordinality t(x, ord)),
+  j as (
+    select l.*, z.name zname, z.n zn, z.upc, z.prices, z.breaks, i.id iid, i.name iname, i.category, i.unit, i.item_no,
+      coalesce((select y.upc from item_sizes y where y.item_id = i.id and y.n = 1 and y.upc <> '' order by y.pos limit 1), '') single_upc,
+      case when trim(i.break_group) <> '' then 'g:' || lower(trim(i.break_group)) || '|' || lower(trim(z.name)) else 's:' || z.id::text end gk
+    from l join item_sizes z on z.id = l.sid and z.company_id = p_company join items i on i.id = z.item_id),
+  g as (select gk, sum(shipped) gq from j group by gk),
+  p as (
+    select j.*, g.gq, _num(j.prices -> (p_level::text)) price,
+      coalesce((select max(_num(b->'off')) from jsonb_array_elements(j.breaks) b where (b->>'min')::int <= g.gq), 0) off
+    from j join g using (gk)),
+  q as (select p.*, round(p.price - p.off, 2) unit_price from p)
+  select jsonb_build_object(
+    'lines', coalesce(jsonb_agg(jsonb_build_object('size_id', sid, 'item_id', iid, 'name', iname, 'size', zname, 'n', zn, 'unit_name', unit, 'upc', upc, 'item_no', item_no, 'single_upc', single_upc,
+      'category', category, 'ordered', ordered, 'shipped', shipped, 'price', price, 'off', off, 'unit_price', unit_price,
+      'total', round(unit_price * shipped, 2), 'group_qty', gq) order by ord), '[]'::jsonb),
+    'total', coalesce(sum(round(unit_price * shipped, 2)), 0), 'units', coalesce(sum(shipped), 0), 'n', count(*),
+    'noprice', (select iname || ' (' || zname || ')' from q q2 where q2.price is null limit 1))
+  into r from q;
+  if (r->>'n')::int <> n_in then raise exception 'an item on this sale isn''t in your list any more'; end if;
+  if r->>'noprice' is not null then raise exception '% has no price for this customer''s level', r->>'noprice'; end if;
+  return r;
+end $$;
+
+-- Barcodes to add: a barcode now counts as known when it is a size's extra barcode too, and it can be added to a size
+-- that already has one (it becomes an extra barcode).
+create or replace function upc_unknown_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'manager');
+  return coalesce((select jsonb_agg(jsonb_build_object('upc', u.upc, 'times', u.times, 'first_at', u.first_at, 'last_at', u.last_at, 'last_by', u.last_by,
+      'sold_as', u.sold_as, 'sold_as_name', i.name, 'sold_by', u.sold_by) order by u.last_at desc)
+    from unknown_upcs u left join items i on i.id = u.sold_as
+    where u.company_id = p_company and u.status = 'open' and _upc_owner(p_company, u.upc, null) is null), '[]'::jsonb);
+end $$;
+
+create or replace function upc_unknown_done(p_company uuid, p_upc text, p_action text, p_size uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare z item_sizes; nm text;
+begin
+  perform _need(p_company, 'manager');
+  if p_action = 'ignore' then
+    update unknown_upcs set status = 'ignored' where company_id = p_company and upc = p_upc;
+    perform _log(p_company, 'barcode ignored', jsonb_build_object('upc', p_upc));
+    return upc_unknown_list(p_company);
+  end if;
+  if p_action <> 'add' then raise exception 'unknown action'; end if;
+  select * into z from item_sizes where id = p_size and company_id = p_company;
+  if z.id is null then raise exception 'pick a size'; end if;
+  if _upc_owner(p_company, p_upc, null) is not null then raise exception 'that barcode is already on an item'; end if;
+  if z.upc = '' then update item_sizes set upc = p_upc where id = z.id;
+  else insert into size_upcs(company_id, upc, size_id) values (p_company, p_upc, z.id); end if;
+  update unknown_upcs set status = 'added' where company_id = p_company and upc = p_upc;
+  select name into nm from items where id = z.item_id;
+  update items set updated_at = now() where id = z.item_id;
+  perform _log(p_company, 'barcode added', jsonb_build_object('upc', p_upc, 'item', z.item_id, 'name', nm, 'size', z.name, 'extra', z.upc <> ''));
+  return upc_unknown_list(p_company);
+end $$;

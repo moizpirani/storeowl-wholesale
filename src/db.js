@@ -2,7 +2,7 @@
 // A pretend backend (makeFake) has the same calls, for tests and pictures.
 
 import { cleanStates } from './states.js';
-import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck, openItems, todayIso } from './rules.js';
+import { DEFAULT_SETTINGS, sizeUpcs, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck, openItems, todayIso } from './rules.js';
 
 export function makeDb(sb) {
   async function rpc(name, args) {
@@ -355,10 +355,9 @@ export function makeFake(opts) {
       const bad = itemCheck(Object.assign({}, p, { sizes })); if (bad) throw new Error(bad);
       let it = p.id && S.items.find((x) => x.id === p.id && x.company_id === cid);
       if (p.id && !it) throw new Error('Item not found');
-      for (const z of sizes) {
-        const u = cleanUpc(z.upc);
-        const other = u && S.items.find((x) => x.company_id === cid && x !== it && x.sizes.some((s) => s.upc === u));
-        if (other) throw new Error('UPC ' + u + ' is already on ' + other.name);
+      for (const z of sizes) for (const u of sizeUpcs(z)) {
+        const other = S.items.find((x) => x.company_id === cid && x !== it && x.sizes.some((s) => sizeUpcs(s).includes(u)));
+        if (other) throw new Error('Barcode ' + u + ' is already on ' + other.name);
       }
       const isnew = !it;
       const before = it ? copy(it) : null;
@@ -369,7 +368,8 @@ export function makeFake(opts) {
       it.sizes = sizes.map((z) => {
         const pr = {}; Object.keys(z.prices).forEach((k) => { const v = nz(z.prices[k]); if (v != null) pr[k] = v; });
         const breaks = (z.breaks || []).map((b) => ({ min: +b.min, off: Math.round(+b.off * 10000) / 10000 })).sort((a, b) => a.min - b.min);
-        return { id: z.id || id(), name: z.name.trim(), n: z.n, upc: cleanUpc(z.upc), cost: z.cost, prices: pr, breaks };
+        const u = cleanUpc(z.upc), extra = [...new Set((z.upcs || []).map(cleanUpc).filter((x) => x && x !== u))];
+        return { id: z.id || id(), name: z.name.trim(), n: z.n, upc: u, upcs: extra, sells: z.sells !== false, cost: z.cost, prices: pr, breaks };
       });
       log(cid, isnew ? 'item added' : 'item changed', { item: it.id, name: it.name, before });
       return itemOut(it, true);
@@ -547,6 +547,7 @@ export function makeFake(opts) {
       } else {
         pr = priceSale(p.lines, S.items.filter((x) => x.company_id === cid), cu.level);
         const gone = pr.lines.find((l) => l.missing === 'gone'); if (gone) throw new Error('An item on this sale isn’t in your list any more');
+        const ns = pr.lines.find((l) => l.missing === 'notsold'); if (ns) throw new Error(ns.name + ' (' + ns.size + ') isn’t a size you sell (it’s only the store’s barcode)');
         const np = pr.lines.find((l) => l.missing === 'price'); if (np) throw new Error(np.name + ' (' + np.size + ') has no price for this customer’s level');
         if (p.action === 'complete' && !pr.count) throw new Error('Nothing is shipped on this sale');
       }
@@ -832,7 +833,7 @@ export function makeFake(opts) {
     },
     async upcList(cid) {
       need(cid, 'manager');
-      return S.upcs.filter((x) => x.company_id === cid && x.status === 'open' && !S.items.some((it) => it.company_id === cid && it.sizes.some((z) => z.upc === x.upc)))
+      return S.upcs.filter((x) => x.company_id === cid && x.status === 'open' && !S.items.some((it) => it.company_id === cid && it.sizes.some((z) => sizeUpcs(z).includes(x.upc))))
         .sort((a, b) => (b.last_at > a.last_at ? 1 : -1))
         .map((x) => { const it = S.items.find((i) => i.id === x.sold_as); return Object.assign(copy(x), { sold_as_name: it ? it.name : null }); });
     },
@@ -843,10 +844,11 @@ export function makeFake(opts) {
       let it = null, z = null;
       S.items.forEach((i) => { if (i.company_id === cid) i.sizes.forEach((y) => { if (y.id === sizeId) { it = i; z = y; } }); });
       if (!z) throw new Error('Pick a size');
-      if (z.upc) throw new Error('That size already has a barcode — pick another size or add a size to the item');
-      if (S.items.some((i) => i.company_id === cid && i.sizes.some((y) => y.upc === upc))) throw new Error('That barcode is already on an item');
-      z.upc = upc; if (x) x.status = 'added';
-      log(cid, 'barcode added', { upc, item: it.id, name: it.name, size: z.name });
+      if (S.items.some((i) => i.company_id === cid && i.sizes.some((y) => sizeUpcs(y).includes(upc)))) throw new Error('That barcode is already on an item');
+      const extra = !!z.upc;
+      if (extra) z.upcs = (z.upcs || []).concat(upc); else z.upc = upc;
+      if (x) x.status = 'added';
+      log(cid, 'barcode added', { upc, item: it.id, name: it.name, size: z.name, extra });
       return api.upcList(cid);
     },
     async noteAdd(cid, cust, text) {

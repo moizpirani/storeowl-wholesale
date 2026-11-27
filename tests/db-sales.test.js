@@ -90,11 +90,18 @@ test('Counter: unknown barcodes go to the back office; license warning off is fo
   await as(db, OWNER, 'owner@example.com');
   let l = await one(db, 'select upc_unknown_list($1)', [cid]);
   assert.equal(l.length, 1); assert.equal(l[0].times, 2); assert.equal(l[0].sold_as_name, 'Mystery gum');
-  await fails(db, 'select upc_unknown_done($1, $2, $3, $4)', [cid, '07000012345', 'add', it.sizes[1].id], /already has a barcode/);
-  l = await one(db, 'select upc_unknown_done($1, $2, $3, $4)', [cid, '07000012345', 'add', it.sizes[0].id]);
+  // A size that already has a barcode gets it as an extra barcode (Phase 4: packaging changes).
+  const had = it.sizes[1].upc;
+  l = await one(db, 'select upc_unknown_done($1, $2, $3, $4)', [cid, '07000012345', 'add', it.sizes[1].id]);
   assert.equal(l.length, 0);
-  const got = (await one(db, 'select items_list($1)', [cid]))[0];
-  assert.equal(got.sizes.find((z) => z.name === 'Box').upc, '07000012345');
+  let got = (await one(db, 'select items_list($1)', [cid]))[0];
+  const z1 = got.sizes.find((z) => z.id === it.sizes[1].id);
+  assert.equal(z1.upc, had); assert.deepEqual(z1.upcs, ['07000012345']);
+  await fails(db, 'select upc_unknown_done($1, $2, $3, $4)', [cid, '07000012345', 'add', it.sizes[0].id], /already on an item/);
+  await one(db, 'select upc_unknown_scan($1, $2, null)', [cid, '07000012399']);
+  l = await one(db, 'select upc_unknown_done($1, $2, $3, $4)', [cid, '07000012399', 'add', it.sizes[0].id]);
+  got = (await one(db, 'select items_list($1)', [cid]))[0];
+  assert.equal(got.sizes.find((z) => z.name === 'Box').upc, '07000012399');
   await one(db, 'select upc_unknown_scan($1, $2, null)', [cid, '99999999']);
   assert.equal((await one(db, 'select upc_unknown_done($1, $2, $3, null)', [cid, '99999999', 'ignore'])).length, 0);
 

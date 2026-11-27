@@ -551,3 +551,15 @@ h2.mt{margin-top:18px}
 .rcpan .lrks{display:flex;gap:10px}.rcpan .lrk{flex:1}
 .owtab td small{display:block}
 .pmrc{margin:10px 0 0;align-items:center}
+
+/* Phase 4: "You sell it" switch and extra barcodes on a size */
+.sw{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:pointer;position:relative}
+.sw input{position:absolute;opacity:0;width:1px;height:1px}
+.sw i{width:34px;height:20px;border-radius:999px;background:#C8CED6;position:relative;display:inline-block;transition:background .15s}
+.sw i:after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
+.sw.on i{background:var(--teal)}.sw.on i:after{left:16px}
+.sw input:focus-visible+i{outline:2px solid var(--amber);outline-offset:2px}
+.sz tr.nosell td{background:#F6F7F9}
+.sz td.znosell{font-size:12.5px;color:var(--muted);padding-left:8px}
+.zup{display:flex;align-items:center;gap:2px;margin-top:4px}
+.lnk.zupadd{display:block;font-size:12px;margin-top:3px;padding:0}

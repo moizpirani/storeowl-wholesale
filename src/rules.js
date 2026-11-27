@@ -133,14 +133,21 @@ export function itemIssues(it, levels) {
   const sizes = it.sizes || [];
   if (!sizes.some((z) => cleanUpc(z.upc))) out.push({ k: 'upc', t: 'No UPC' });
   else if (!singleUpc(it)) out.push({ k: 'pack', t: 'No single-pack barcode' });
-  if (it.cost_hidden !== true && sizes.some((z) => z.cost == null)) out.push({ k: 'cost', t: 'No cost' });
-  if (sizes.some((z) => (levels || []).some((l) => z.prices == null || z.prices[l.n] == null))) out.push({ k: 'price', t: 'Price missing' });
-  if (sizes.some((z) => z.cost != null && (levels || []).some((l) => z.prices && z.prices[l.n] != null && z.prices[l.n] < z.cost))) out.push({ k: 'below', t: 'Price below cost' });
+  const sold = sizes.filter(sells);   // a size kept only for the store's barcode needs no cost or price
+  if (it.cost_hidden !== true && sold.some((z) => z.cost == null)) out.push({ k: 'cost', t: 'No cost' });
+  if (sold.some((z) => (levels || []).some((l) => z.prices == null || z.prices[l.n] == null))) out.push({ k: 'price', t: 'Price missing' });
+  if (sold.some((z) => z.cost != null && (levels || []).some((l) => z.prices && z.prices[l.n] != null && z.prices[l.n] < z.cost))) out.push({ k: 'below', t: 'Price below cost' });
   return out;
 }
 
-// The size an item is listed by: the one people buy most often is usually the carton/box, so the first size.
-export function mainSize(it) { return (it.sizes || [])[0] || null; }
+// "You sell it" (Phase 4): a size with sells = false (usually the single pack) is only there for the store's barcode
+// on the EDI file. It's never sold, received or offered as a size; scanning its barcode means the main size you sell.
+export const sells = (z) => !!z && z.sells !== false;
+export function sellSizes(it) { return ((it && it.sizes) || []).filter(sells); }
+// Every barcode a size answers to: its main UPC and any extra ones (packaging changes).
+export function sizeUpcs(z) { return [z && z.upc].concat((z && z.upcs) || []).map(cleanUpc).filter(Boolean); }
+// The size an item is listed by: the one people buy most often is usually the carton/box, so the first size you sell.
+export function mainSize(it) { return sellSizes(it)[0] || (it.sizes || [])[0] || null; }
 // The single pack / can / each: the size with 1 unit in it. Its barcode is the one the store's register scans,
 // so it's the barcode sent in the EDI file (the store's back office matches on it).
 export function singleSize(it) { return (it.sizes || []).find((z) => +z.n === 1) || null; }
@@ -161,10 +168,11 @@ export function itemCheck(p) {
   for (const z of sizes) {
     if (!String(z.name || '').trim()) return 'Every size needs a name, like Carton or Box.';
     if (!(Number.isInteger(+z.n) && +z.n >= 1)) return 'How many in a ' + (z.name || 'size') + '? Type a whole number, 1 or more.';
-    const u = cleanUpc(z.upc);
-    if (u && (u.length < 6 || u.length > 14)) return 'The UPC on ' + z.name + ' should be 6 to 14 digits.';
-    if (u && seen[u]) return 'Two sizes have the same UPC.';
-    if (u) seen[u] = 1;
+    for (const u of sizeUpcs(z)) {
+      if (u.length < 6 || u.length > 14) return 'The barcode ' + u + ' on ' + z.name + ' should be 6 to 14 digits.';
+      if (seen[u]) return 'Barcode ' + u + ' is typed twice on this item.';
+      seen[u] = 1;
+    }
     if (z.cost != null && (isNaN(z.cost) || z.cost < 0)) return 'The cost on ' + z.name + ' isn’t a number.';
     for (const k of Object.keys(z.prices || {})) {
       const v = z.prices[k];
@@ -172,6 +180,7 @@ export function itemCheck(p) {
     }
     const bk = breaksCheck(z); if (bk) return bk;
   }
+  if (!sizes.some(sells)) return 'At least one size has to be one you sell.';
   return '';
 }
 
@@ -273,8 +282,8 @@ export function priceSale(lines, items, level) {
     count += sh;
     return { size_id: z.id, item_id: it.id, name: it.name, size: z.name, n: z.n, unit_name: it.unit, upc: z.upc, category: it.category, photo_url: it.photo_url || '',
       item_no: it.item_no || '', single_upc: singleUpc(it),
-      sizes: (it.sizes || []).map((y) => ({ id: y.id, name: y.name })), ordered: +l.ordered || 0, shipped: sh, price, off, unit_price: unit, total: tot,
-      group_qty: q, group: (it.break_group || '').trim(), missing: price == null ? 'price' : '' };
+      sizes: sellSizes(it).map((y) => ({ id: y.id, name: y.name })), ordered: +l.ordered || 0, shipped: sh, price, off, unit_price: unit, total: tot,
+      group_qty: q, group: (it.break_group || '').trim(), missing: !sells(z) ? 'notsold' : price == null ? 'price' : '' };
   });
   return { lines: out, total: Math.round(total * 100) / 100, count };
 }
@@ -284,6 +293,8 @@ export function saleCheck(sale) {
   const np = sale.lines.find((l) => l.missing === 'price');
   if (np) return np.name + ' (' + np.size + ') has no price for this customer’s level.';
   if (sale.lines.find((l) => l.missing === 'gone')) return 'An item on this sale isn’t in your list any more. Take it off.';
+  const ns = sale.lines.find((l) => l.missing === 'notsold');
+  if (ns) return ns.name + ' (' + ns.size + ') isn’t a size you sell. Take it off.';
   const bad = sale.lines.find((l) => !(Number.isInteger(l.ordered) && l.ordered >= 0 && Number.isInteger(l.shipped) && l.shipped >= 0));
   if (bad) return 'Quantities are whole numbers.';
   if (!sale.lines.some((l) => l.shipped > 0)) return 'Nothing is shipped on this sale.';
@@ -295,9 +306,18 @@ export function findUpc(items, code) {
   if (c.length < 6) return null;
   for (const it of items || []) {
     if (it.active === false) continue;
-    for (const z of it.sizes || []) if (z.upc && upcSame(c, z.upc)) return { it, z };
+    for (const z of it.sizes || []) if (sizeUpcs(z).some((u) => upcSame(c, u))) return { it, z };
   }
   return null;
+}
+// What a scanned barcode means for selling or receiving: a size you don't sell (the pack kept for the store's barcode)
+// turns into the item's main size you sell, with pack = true so the screen can say so.
+export function scanSize(items, code) {
+  const f = findUpc(items, code);
+  if (!f) return null;
+  if (sells(f.z)) return { it: f.it, z: f.z, pack: false };
+  const m = sellSizes(f.it)[0];
+  return m ? { it: f.it, z: m, pack: true, scanned: f.z } : null;
 }
 
 // ---------- Returns and credits (Phase 2, piece 4) ----------
@@ -329,7 +349,7 @@ export function priceCredit(lines, items, level, paid) {
     if (tot != null) total -= tot;
     count += qty;
     return { size_id: z.id, item_id: it.id, name: it.name, size: z.name, n: z.n, unit_name: it.unit, upc: z.upc, category: it.category, photo_url: it.photo_url || '',
-      item_no: it.item_no || '', single_upc: singleUpc(it), sizes: (it.sizes || []).map((y) => ({ id: y.id, name: y.name })),
+      item_no: it.item_no || '', single_upc: singleUpc(it), sizes: sellSizes(it).map((y) => ({ id: y.id, name: y.name })),
       ordered: -qty, shipped: -qty, qty, price, off: 0, unit_price: price, total: tot == null ? null : -tot, reason: why, from: last != null ? 'paid' : 'level',
       missing: price == null ? 'price' : '' };
   });
