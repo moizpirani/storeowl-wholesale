@@ -2672,3 +2672,339 @@ begin
   perform _log(p_company, 'barcode added', jsonb_build_object('upc', p_upc, 'item', z.item_id, 'name', nm, 'size', z.name, 'extra', z.upc <> ''));
   return upc_unknown_list(p_company);
 end $$;
+
+-- =====================================================================
+-- Phase 4, part 2 (2026-11-27): suppliers, receiving supplier invoices, stock.
+-- Stock is kept in each item's smallest unit (the pack / can / each) as a list of moves: receiving adds, a posted invoice
+-- takes out, a credit memo for a wrong / not-ordered item puts back (damaged and expired don't go back on the shelf),
+-- a void puts back what its invoice took out. Moiz (2026-11-27): anyone can receive a delivery into stock, but only an
+-- OWNER changes costs and prices — when staff or a manager receives, cost changes wait in "Costs to check" for an owner.
+-- =====================================================================
+create table if not exists suppliers (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  name text not null check (length(trim(name)) between 1 and 120),
+  phone text not null default '', email text not null default '', note text not null default '',
+  created_at timestamptz not null default now()
+);
+create unique index if not exists suppliers_name on suppliers(company_id, lower(trim(name)));
+alter table suppliers enable row level security;
+
+-- What StoreOwl learned about a size from a supplier's invoices: their item #, their unit and the last cost.
+-- per = how many of the size are in their unit (Case = 10 cartons → per 10).
+create table if not exists supplier_items (
+  supplier_id uuid not null references suppliers(id) on delete cascade,
+  size_id uuid not null references item_sizes(id) on delete cascade,
+  company_id uuid not null references companies(id) on delete cascade,
+  their_no text not null default '',
+  unit text not null default '',
+  per int not null default 1 check (per >= 1),
+  last_cost numeric(12,4),
+  last_at timestamptz not null default now(),
+  primary key (supplier_id, size_id)
+);
+alter table supplier_items enable row level security;
+
+-- One supplier invoice being received. lines = [{size_id, unit, per, qty, cost, their_no}]: qty of their unit,
+-- cost = cost of one of their unit. cost_changes = what the costs became (owner) or would become (waiting for an owner).
+create table if not exists receivings (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  supplier_id uuid not null references suppliers(id),
+  number text not null default '',
+  inv_date date not null default current_date,
+  inv_total numeric(12,2),
+  how text not null default 'typed' check (how in ('typed','photo','email','file','scan')),
+  status text not null default 'draft' check (status in ('draft','received','undone','deleted')),
+  lines jsonb not null default '[]'::jsonb,
+  total numeric(12,2) not null default 0,
+  by_name text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  received_at timestamptz, received_by text not null default '',
+  costs text not null default 'none' check (costs in ('none','done','waiting','kept')),
+  cost_changes jsonb not null default '[]'::jsonb,
+  undone_at timestamptz, undone_by text not null default ''
+);
+create index if not exists receivings_company on receivings(company_id, status, created_at desc);
+alter table receivings enable row level security;
+
+create table if not exists stock_moves (
+  id bigserial primary key,
+  company_id uuid not null references companies(id) on delete cascade,
+  item_id uuid not null references items(id) on delete cascade,
+  qty numeric(14,3) not null,                   -- in the item's smallest unit, + in / − out
+  kind text not null check (kind in ('receive','unreceive','sale','credit','void','count')),
+  ref uuid,
+  at timestamptz not null default now()
+);
+create index if not exists stock_moves_item on stock_moves(company_id, item_id);
+create index if not exists stock_moves_ref on stock_moves(ref);
+alter table stock_moves enable row level security;
+
+-- Sales move stock by themselves when they're posted or voided.
+create or replace function _sale_stock() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.status = 'posted' and old.status is distinct from 'posted' and old.status is distinct from 'void' then
+    insert into stock_moves(company_id, item_id, qty, kind, ref)
+      select new.company_id, z.item_id,
+        -(l->>'shipped')::numeric * z.n,
+        case when new.kind = 'credit' then 'credit' else 'sale' end, new.id
+      from jsonb_array_elements(new.lines) l join item_sizes z on z.id = nullif(l->>'size_id','')::uuid
+      where coalesce((l->>'other')::boolean, false) = false and coalesce((l->>'shipped')::numeric, 0) <> 0
+        and (new.kind = 'invoice' or coalesce(l->>'reason','') in ('wrong','notordered'));
+  elsif new.status = 'void' and old.status = 'posted' then
+    insert into stock_moves(company_id, item_id, qty, kind, ref)
+      select company_id, item_id, -sum(qty), 'void', new.id from stock_moves where ref = new.id and kind in ('sale','credit')
+      group by company_id, item_id having sum(qty) <> 0;
+  end if;
+  return new;
+end $$;
+drop trigger if exists sales_stock on sales;
+create trigger sales_stock after update of status on sales for each row execute function _sale_stock();
+create or replace function _sale_stock_ins() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.status = 'posted' then
+    insert into stock_moves(company_id, item_id, qty, kind, ref)
+      select new.company_id, z.item_id, -(l->>'shipped')::numeric * z.n, case when new.kind = 'credit' then 'credit' else 'sale' end, new.id
+      from jsonb_array_elements(new.lines) l join item_sizes z on z.id = nullif(l->>'size_id','')::uuid
+      where coalesce((l->>'other')::boolean, false) = false and coalesce((l->>'shipped')::numeric, 0) <> 0
+        and (new.kind = 'invoice' or coalesce(l->>'reason','') in ('wrong','notordered'));
+  end if;
+  return new;
+end $$;
+drop trigger if exists sales_stock_ins on sales;
+create trigger sales_stock_ins after insert on sales for each row execute function _sale_stock_ins();
+
+create or replace function suppliers_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return coalesce((select jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'phone', s.phone, 'email', s.email, 'note', s.note,
+      'last', (select jsonb_build_object('number', r.number, 'date', r.inv_date) from receivings r
+               where r.supplier_id = s.id and r.status = 'received' order by r.inv_date desc, r.received_at desc limit 1),
+      'items', (select coalesce(jsonb_agg(jsonb_build_object('size_id', x.size_id, 'their_no', x.their_no, 'unit', x.unit, 'per', x.per,
+                 'last_cost', x.last_cost, 'last_at', x.last_at)), '[]'::jsonb) from supplier_items x where x.supplier_id = s.id))
+    order by lower(s.name)) from suppliers s where s.company_id = p_company), '[]'::jsonb);
+end $$;
+
+-- Add a supplier, or change one. Anyone receiving can add a supplier (they're typing the invoice in front of them).
+create or replace function supplier_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare sid uuid := nullif(p->>'id','')::uuid; nm text := trim(coalesce(p->>'name',''));
+begin
+  perform _need(p_company, case when sid is null then 'staff' else 'manager' end);
+  if nm = '' then raise exception 'type the supplier''s name'; end if;
+  if exists (select 1 from suppliers where company_id = p_company and lower(trim(name)) = lower(nm) and id is distinct from sid) then
+    raise exception '% is already a supplier', nm; end if;
+  if sid is null then
+    insert into suppliers(company_id, name, phone, email, note) values (p_company, nm, trim(coalesce(p->>'phone','')), trim(coalesce(p->>'email','')), trim(coalesce(p->>'note','')))
+      returning id into sid;
+    perform _log(p_company, 'supplier added', jsonb_build_object('supplier', sid, 'name', nm));
+  else
+    update suppliers set name = nm, phone = trim(coalesce(p->>'phone','')), email = trim(coalesce(p->>'email','')), note = trim(coalesce(p->>'note',''))
+      where id = sid and company_id = p_company;
+    if not found then raise exception 'supplier not found'; end if;
+    perform _log(p_company, 'supplier changed', jsonb_build_object('supplier', sid, 'name', nm));
+  end if;
+  return (select x from jsonb_array_elements(suppliers_list(p_company)) x where x->>'id' = sid::text);
+end $$;
+
+-- Clean receiving lines: every size must be a size you sell; qty and per whole numbers; cost 0 or more.
+create or replace function _recv_lines(p_company uuid, p_lines jsonb) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare l jsonb; z item_sizes; nm text; out jsonb := '[]'::jsonb; q numeric; per int; c numeric;
+begin
+  for l in select * from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) loop
+    select * into z from item_sizes where id = nullif(l->>'size_id','')::uuid and company_id = p_company;
+    if z.id is null then raise exception 'an item on this invoice isn''t in your list any more'; end if;
+    select name into nm from items where id = z.item_id;
+    if not z.sells then raise exception '% (%) isn''t a size you sell — receive it as the size you sell', nm, z.name; end if;
+    q := _num(l->'qty'); per := coalesce((l->>'per')::int, 1); c := _num(l->'cost');
+    if q is null or q <> trunc(q) or q < 0 then raise exception 'how many % came? Type a whole number', nm; end if;
+    if per < 1 then raise exception 'the unit for % holds at least 1', nm; end if;
+    if c is not null and c < 0 then raise exception 'the cost of % can''t be below 0', nm; end if;
+    out := out || jsonb_build_object('size_id', z.id, 'item_id', z.item_id, 'name', nm, 'size', z.name, 'n', z.n,
+      'unit', coalesce(nullif(trim(l->>'unit'),''), z.name), 'per', per, 'qty', q, 'cost', c, 'their_no', left(trim(coalesce(l->>'their_no','')), 30),
+      'line', round(coalesce(c, 0) * q, 2));
+  end loop;
+  return out;
+end $$;
+
+-- The cost changes a received invoice brings, per size you sell of each item it touches:
+-- [{item_id, name, size_id, size, before, after}]; after = the invoice's cost per smallest unit × the size's n.
+create or replace function _recv_costs(p_company uuid, p_lines jsonb) returns jsonb
+language sql stable security definer set search_path = public as $$
+  with per_unit as (   -- last line wins when an item is on the invoice twice
+    select distinct on (l->>'item_id') (l->>'item_id')::uuid item_id, _num(l->'cost') / ((l->>'per')::int * (l->>'n')::int) cu
+    from jsonb_array_elements(p_lines) with ordinality t(l, ord) where _num(l->'cost') is not null and _num(l->'qty') > 0
+    order by l->>'item_id', ord desc)
+  select coalesce(jsonb_agg(jsonb_build_object('item_id', i.id, 'name', i.name, 'size_id', z.id, 'size', z.name, 'n', z.n,
+      'before', z.cost, 'after', round(p.cu * z.n, 4), 'prices', z.prices) order by i.name, z.pos), '[]'::jsonb)
+  from per_unit p join items i on i.id = p.item_id join item_sizes z on z.item_id = i.id and z.sells
+  where z.cost is distinct from round(p.cu * z.n, 4) $$;
+
+-- Owners: put new costs on, and move prices: same = add the cost change to every price, margin = keep each price's
+-- % over cost, none = prices stay. Returns how many sizes changed.
+create or replace function _apply_costs(p_company uuid, p_changes jsonb, p_mode text) returns int
+language plpgsql security definer set search_path = public as $$
+declare ch jsonb; k text; v numeric; b numeric; a numeric; np jsonb; n int := 0;
+begin
+  if p_mode not in ('same','margin','none') then raise exception 'pick what happens to your prices'; end if;
+  for ch in select * from jsonb_array_elements(p_changes) loop
+    b := _num(ch->'before'); a := _num(ch->'after');
+    select prices into np from item_sizes where id = (ch->>'size_id')::uuid and company_id = p_company;
+    if np is null then continue; end if;
+    if p_mode <> 'none' and b is not null and b > 0 then
+      for k, v in select key, _num(value) from jsonb_each(np) loop
+        if v is null then continue; end if;
+        np := jsonb_set(np, array[k], to_jsonb(case when p_mode = 'same' then round(v + (a - b), 2) else round(v * a / b, 2) end));
+      end loop;
+    end if;
+    update item_sizes set cost = a, prices = np where id = (ch->>'size_id')::uuid;
+    update items set updated_at = now() where id = (ch->>'item_id')::uuid;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+create or replace function _recv_json(r receivings) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', r.id, 'supplier_id', r.supplier_id, 'supplier', (select name from suppliers where id = r.supplier_id),
+    'number', r.number, 'inv_date', r.inv_date, 'inv_total', r.inv_total, 'how', r.how, 'status', r.status, 'lines', r.lines, 'total', r.total,
+    'by_name', r.by_name, 'created_at', r.created_at, 'received_at', r.received_at, 'received_by', r.received_by,
+    'costs', r.costs, 'cost_changes', r.cost_changes, 'undone_at', r.undone_at, 'undone_by', r.undone_by) $$;
+
+-- Save a supplier invoice. p = {id?, supplier_id, number, inv_date, inv_total, how, lines, action: draft|receive|delete, prices?: same|margin|none}
+-- receive (anyone): the lines must add up to the invoice total; stock goes up; what StoreOwl learns about the supplier is kept.
+-- Costs: an owner's receive puts the new costs on and moves prices by `prices`; anyone else's waits for an owner (costs = 'waiting').
+create or replace function receiving_save(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare role text := _need(p_company, 'staff'); who text; r receivings; rid uuid := nullif(p->>'id','')::uuid; ls jsonb; tot numeric; ch jsonb; act text := coalesce(p->>'action','draft');
+begin
+  select coalesce(nullif(m.name,''), auth.jwt()->>'email') into who from company_members m where m.company_id = p_company and m.user_id = auth.uid();
+  if rid is not null then
+    select * into r from receivings where id = rid and company_id = p_company for update;
+    if r.id is null then raise exception 'invoice not found'; end if;
+    if r.status <> 'draft' then raise exception 'this invoice is already %', case r.status when 'received' then 'received' else r.status end; end if;
+  end if;
+  if act = 'delete' then
+    if r.id is null then raise exception 'nothing to delete'; end if;
+    update receivings set status = 'deleted', updated_at = now() where id = r.id;
+    perform _log(p_company, 'supplier invoice deleted', jsonb_build_object('receiving', r.id, 'number', r.number));
+    select * into r from receivings where id = rid; return _recv_json(r);
+  end if;
+  if act not in ('draft','receive') then raise exception 'unknown action'; end if;
+  if not exists (select 1 from suppliers where id = nullif(p->>'supplier_id','')::uuid and company_id = p_company) then raise exception 'pick the supplier'; end if;
+  ls := _recv_lines(p_company, p->'lines');
+  tot := coalesce((select sum((l->>'line')::numeric) from jsonb_array_elements(ls) l), 0);
+  if r.id is null then
+    insert into receivings(company_id, supplier_id, by_name) values (p_company, (p->>'supplier_id')::uuid, coalesce(who,'')) returning * into r;
+  end if;
+  update receivings set supplier_id = (p->>'supplier_id')::uuid, number = left(trim(coalesce(p->>'number','')), 40),
+    inv_date = coalesce(nullif(p->>'inv_date','')::date, current_date), inv_total = _num(p->'inv_total'),
+    how = coalesce(nullif(p->>'how',''), r.how), lines = ls, total = tot, updated_at = now() where id = r.id returning * into r;
+  if act = 'draft' then
+    perform _log(p_company, 'supplier invoice saved for later', jsonb_build_object('receiving', r.id, 'number', r.number, 'total', tot));
+    return _recv_json(r);
+  end if;
+  -- Receive.
+  if jsonb_array_length(ls) = 0 then raise exception 'add at least one item'; end if;
+  if r.number = '' then raise exception 'type the invoice # from their invoice'; end if;
+  if r.inv_total is null then raise exception 'type the invoice total from the bottom of their invoice'; end if;
+  if round(tot, 2) <> round(r.inv_total, 2) then raise exception 'the lines add up to % but the invoice says % — find the line that''s off', to_char(tot, 'FM999,999,990.00'), to_char(r.inv_total, 'FM999,999,990.00'); end if;
+  if exists (select 1 from receivings where company_id = p_company and supplier_id = r.supplier_id and number = r.number and status = 'received' and id <> r.id) then
+    raise exception 'invoice % from this supplier was already received', r.number; end if;
+  ch := _recv_costs(p_company, ls);
+  insert into stock_moves(company_id, item_id, qty, kind, ref)
+    select p_company, (l->>'item_id')::uuid, (l->>'qty')::numeric * (l->>'per')::int * (l->>'n')::int, 'receive', r.id
+    from jsonb_array_elements(ls) l where (l->>'qty')::numeric <> 0;
+  insert into supplier_items(supplier_id, size_id, company_id, their_no, unit, per, last_cost, last_at)
+    select distinct on (l->>'size_id') r.supplier_id, (l->>'size_id')::uuid, p_company, l->>'their_no', l->>'unit', (l->>'per')::int, _num(l->'cost'), now()
+    from jsonb_array_elements(ls) l
+  on conflict (supplier_id, size_id) do update set their_no = case when excluded.their_no <> '' then excluded.their_no else supplier_items.their_no end,
+    unit = excluded.unit, per = excluded.per, last_cost = coalesce(excluded.last_cost, supplier_items.last_cost), last_at = now();
+  if jsonb_array_length(ch) = 0 then
+    update receivings set costs = 'none' where id = r.id;
+  elsif role = 'owner' and coalesce(p->>'prices','') <> '' then
+    perform _apply_costs(p_company, ch, p->>'prices');
+    update receivings set costs = 'done', cost_changes = jsonb_build_object('mode', p->>'prices', 'list', ch) where id = r.id;
+  else
+    update receivings set costs = 'waiting', cost_changes = jsonb_build_object('mode', null, 'list', ch) where id = r.id;
+  end if;
+  update receivings set status = 'received', received_at = now(), received_by = coalesce(who,'') where id = r.id returning * into r;
+  perform _log(p_company, 'supplier invoice received', jsonb_build_object('receiving', r.id, 'number', r.number, 'total', tot, 'costs', r.costs));
+  return _recv_json(r);
+end $$;
+
+-- Owners: the costs waiting from invoices received by someone else. mode = same | margin | none (put the new costs on and
+-- leave prices), keep = don't change the costs at all.
+create or replace function receiving_costs(p_company uuid, p_id uuid, p_mode text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r receivings; ch jsonb;
+begin
+  perform _need(p_company, 'owner');
+  select * into r from receivings where id = p_id and company_id = p_company for update;
+  if r.id is null then raise exception 'invoice not found'; end if;
+  if r.costs <> 'waiting' then raise exception 'these costs aren''t waiting any more'; end if;
+  if p_mode = 'keep' then
+    update receivings set costs = 'kept', cost_changes = jsonb_set(cost_changes, '{mode}', '"keep"') where id = r.id returning * into r;
+  else
+    -- Costs may have moved since: work it out again from today's costs.
+    ch := _recv_costs(p_company, r.lines);
+    perform _apply_costs(p_company, ch, p_mode);
+    update receivings set costs = 'done', cost_changes = jsonb_build_object('mode', p_mode, 'list', ch) where id = r.id returning * into r;
+  end if;
+  perform _log(p_company, 'supplier invoice costs checked', jsonb_build_object('receiving', r.id, 'number', r.number, 'mode', p_mode));
+  return _recv_json(r);
+end $$;
+
+-- Managers: take a received invoice back out of stock (a mistake). Costs and prices already changed stay; say so on screen.
+create or replace function receiving_undo(p_company uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r receivings; who text;
+begin
+  perform _need(p_company, 'manager');
+  select coalesce(nullif(m.name,''), auth.jwt()->>'email') into who from company_members m where m.company_id = p_company and m.user_id = auth.uid();
+  select * into r from receivings where id = p_id and company_id = p_company for update;
+  if r.id is null then raise exception 'invoice not found'; end if;
+  if r.status <> 'received' then raise exception 'only a received invoice can be taken back'; end if;
+  insert into stock_moves(company_id, item_id, qty, kind, ref)
+    select company_id, item_id, -sum(qty), 'unreceive', r.id from stock_moves where ref = r.id and kind = 'receive' group by company_id, item_id;
+  update receivings set status = 'undone', undone_at = now(), undone_by = coalesce(who,''),
+    costs = case when costs = 'waiting' then 'kept' else costs end where id = r.id returning * into r;
+  perform _log(p_company, 'supplier invoice taken back', jsonb_build_object('receiving', r.id, 'number', r.number, 'total', r.total));
+  return _recv_json(r);
+end $$;
+
+create or replace function receivings_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return coalesce((select jsonb_agg(_recv_json(r) order by coalesce(r.received_at, r.updated_at) desc)
+    from (select * from receivings where company_id = p_company and status <> 'deleted'
+          and (status = 'draft' or costs = 'waiting' or coalesce(received_at, updated_at) > now() - interval '120 days')) r), '[]'::jsonb);
+end $$;
+
+-- Stock: per item, in its smallest unit: on the shelf, set aside (suspended sales and ones sent for review), can sell.
+create or replace function stock_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return coalesce((select jsonb_agg(jsonb_build_object('item_id', i.id, 'on_hand', coalesce(m.q, 0), 'set_aside', coalesce(a.q, 0),
+      'can_sell', greatest(coalesce(m.q, 0) - coalesce(a.q, 0), 0), 'moved', m.last))
+    from items i
+    left join (select item_id, sum(qty) q, max(at) last from stock_moves where company_id = p_company group by item_id) m on m.item_id = i.id
+    left join (select z.item_id, sum((l->>'shipped')::numeric * z.n) q from sales s, jsonb_array_elements(s.lines) l
+               join item_sizes z on z.id = nullif(l->>'size_id','')::uuid
+               where s.company_id = p_company and s.kind = 'invoice' and s.status in ('suspended','review') group by z.item_id) a on a.item_id = i.id
+    where i.company_id = p_company), '[]'::jsonb);
+end $$;
+
+revoke execute on function suppliers_list(uuid), supplier_put(uuid,jsonb), receiving_save(uuid,jsonb), receiving_costs(uuid,uuid,text),
+  receiving_undo(uuid,uuid), receivings_list(uuid), stock_list(uuid) from public, anon;
+grant execute on function suppliers_list(uuid), supplier_put(uuid,jsonb), receiving_save(uuid,jsonb), receiving_costs(uuid,uuid,text),
+  receiving_undo(uuid,uuid), receivings_list(uuid), stock_list(uuid) to authenticated;
+revoke execute on function _recv_lines(uuid,jsonb), _recv_costs(uuid,jsonb), _apply_costs(uuid,jsonb,text), _upc_owner(uuid,text,uuid) from public, anon, authenticated;
