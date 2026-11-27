@@ -66,7 +66,8 @@ export function startApp(root, db) {
   const isOwner = () => (co() || {}).role === 'owner';
   const isMgr = () => ['owner', 'manager'].includes((co() || {}).role);
   const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
-    render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k) });
+    render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k),
+    openInvoice: (id) => { A.view = 'invoices'; A.ivs = null; A.ivWant = id; render(); } });
   const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
   const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });

@@ -525,7 +525,7 @@ export function makeCatalog(X) {
       '<div class="kb"><span>Buys a week</span><b>—</b><small>No orders yet</small></div></div>';
     const licBad = iss.filter((x) => x.k !== 'credit').length;
     const nN = (c.notes || []).length;
-    const tabs = '<nav class="ctabs">' + [['overview', 'Overview'], ['details', 'Details'], ['licenses', 'Licenses' + (licBad ? '<em>' + licBad + '</em>' : '')], ['prices', 'Prices'], ['notes', 'Notes' + (nN ? '<em class="g">' + nN + '</em>' : '')], ['history', 'History']]
+    const tabs = '<nav class="ctabs">' + [['overview', 'Overview'], ['account', 'Invoices & payments'], ['details', 'Details'], ['licenses', 'Licenses' + (licBad ? '<em>' + licBad + '</em>' : '')], ['prices', 'Prices'], ['notes', 'Notes' + (nN ? '<em class="g">' + nN + '</em>' : '')], ['history', 'History']]
       .map((t) => '<button class="' + (S.tab === t[0] ? 'on' : '') + '" data-cutab="' + t[0] + '" data-guide="customers-page-tab">' + t[1] + '</button>').join('') + '</nav>';
     let body = '';
     if (S.tab === 'overview') body = custOverviewHtml(c);
@@ -534,6 +534,7 @@ export function makeCatalog(X) {
     if (S.tab === 'prices') body = custPricesHtml(c);
     if (S.tab === 'notes') body = custNotesHtml(c);
     if (S.tab === 'history') body = custHistHtml(c);
+    if (S.tab === 'account') body = custAcctHtml(c);
     return back + head + licBarHtml(c) + kpis + tabs + body;
   }
   // The orange bar on a customer whose needed license is missing or ended. Selling is never stopped.
@@ -723,6 +724,88 @@ export function makeCatalog(X) {
       '<div class="rowr tight"><button class="btn amber" id="cn-add" data-guide="customers-notes-add">Add note</button></div></div></div>' +
       '<div class="cc"><div class="ccb">' + (c.notes == null ? '<p class="emptyc in">Loading…</p>' : c.notes.length ? c.notes.map((n) => '<div class="note">' + esc(n.text) + '<small>' + esc(n.by) + ' · ' + esc(X.when(n.at)) + '</small></div>').join('') : '<p class="emptyc in">No notes yet</p>') + '</div></div>';
   }
+  // ---------- Invoices & payments: one customer's invoices, credit memos and voids by date (payments join in Phase 3) ----------
+  const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  function acRange(P) {
+    const t = today(), d = new Date(t + 'T12:00:00');
+    if (P.pre === 'month') return [t.slice(0, 8) + '01', t];
+    if (P.pre === 'last') { const a = new Date(d.getFullYear(), d.getMonth() - 1, 1), b = new Date(d.getFullYear(), d.getMonth(), 0); return [ymd(a), ymd(b)]; }
+    if (P.pre === 'ninety') { const a = new Date(d); a.setDate(a.getDate() - 89); return [ymd(a), t]; }
+    if (P.pre === 'year') return [t.slice(0, 5) + '01-01', t];
+    return [P.from || t.slice(0, 8) + '01', P.to || t];
+  }
+  function acState() {
+    const S = A.cu;
+    if (!S.acc || S.acc.cust !== S.open) S.acc = { cust: S.open, pre: 'month', from: '', to: '', k: 'all', q: '', data: null, key: '', err: '' };
+    return S.acc;
+  }
+  function acLoad() {
+    const P = acState(), [f, t] = acRange(P), key = P.cust + '|' + f + '|' + t;
+    if (P.key === key && (P.data || P.err)) return;
+    P.key = key; P.data = null; P.err = '';
+    const cid = A.cid;
+    db.customerAccount(cid, P.cust, f, t).then((d) => { if (A.cid !== cid || P.key !== key) return; P.data = d; if (A.cu.tab === 'account') X.render(); })
+      .catch((e) => { if (P.key !== key) return; P.err = e.message; if (A.cu.tab === 'account') X.render(); });
+  }
+  const AC_K = [['all', 'All'], ['invoice', 'Invoices'], ['credit', 'Credit memos'], ['void', 'Voids']];
+  const acKind = (r) => (r.status === 'void' ? 'void' : r.kind);
+  function custAcctHtml(c) {
+    const P = acState(), [f, t] = acRange(P), D = P.data;
+    const pres = [['month', 'This month'], ['last', 'Last month'], ['ninety', 'Last 90 days'], ['year', 'This year'], ['custom', 'Custom']];
+    const top = '<div class="acbar"><div class="seg">' + pres.map(([k, n]) => '<button class="' + (P.pre === k ? 'on' : '') + '" data-acpre="' + k + '" data-guide="customers-account-dates">' + n + '</button>').join('') + '</div>' +
+      (P.pre === 'custom' ? '<span class="acdt"><input type="date" class="inp" id="ac-from" value="' + esc(f) + '" data-guide="customers-account-from"><span>to</span><input type="date" class="inp" id="ac-to" value="' + esc(t) + '" data-guide="customers-account-to"></span>' :
+        '<span class="acwhen">' + esc(shortDate(f, true)) + ' – ' + esc(shortDate(t, true)) + '</span>') + '</div>';
+    if (P.err) return top + '<div class="cc"><p class="emptyc bad">' + esc(P.err) + '</p></div>';
+    if (!D) return top + '<div class="cc"><p class="emptyc">Loading…</p></div>';
+    const rows = D.rows, live = rows.filter((r) => r.status === 'posted');
+    const inv = live.filter((r) => r.kind === 'invoice'), cr = live.filter((r) => r.kind === 'credit'), vo = rows.filter((r) => r.status === 'void');
+    const sum = (l) => l.reduce((a, r) => a + r.total, 0);
+    const end = Math.round((D.before + sum(live)) * 100) / 100;
+    const dayBefore = ymd(new Date(new Date(f + 'T12:00:00').getTime() - 864e5));
+    const boxes = '<div class="kpis ackpis">' +
+      '<div class="kb"><span>Owed ' + esc(shortDate(dayBefore)) + '</span><b>' + money$(D.before) + '</b><small>Before these dates</small></div>' +
+      '<div class="kb"><span>Invoices</span><b>' + money$(sum(inv)) + '</b><small>' + inv.length + ' ' + (inv.length === 1 ? 'invoice' : 'invoices') + '</small></div>' +
+      '<div class="kb"><span>Credit memos</span><b>' + money$(sum(cr)) + '</b><small>' + cr.length + ' ' + (cr.length === 1 ? 'credit' : 'credits') + (vo.length ? ' · ' + vo.length + ' void not counted' : '') + '</small></div>' +
+      '<div class="kb"><span>Payments</span><b class="mut">—</b><small>Come with Payments</small></div>' +
+      '<div class="kb nv"><span>Owes ' + esc(shortDate(t)) + '</span><b>' + money$(end) + '</b><small>At the end of these dates</small></div></div>';
+    const n = (k) => (k === 'all' ? rows.length : rows.filter((r) => acKind(r) === k).length);
+    const chips = '<div class="acrow2"><div class="chips">' + AC_K.map(([k, nm]) => '<button class="chip' + (P.k === k ? ' on' : '') + '" data-ack="' + k + '" data-guide="customers-account-show">' + nm + ' · ' + n(k) + '</button>').join('') + '</div>' +
+      '<input class="inp acq" id="ac-q" type="search" placeholder="Find an invoice #" value="' + esc(P.q) + '" data-guide="customers-account-search"></div>';
+    let bal = D.before;
+    const tag = (r) => r.status === 'void' ? '<span class="tag bad">Void</span>' : r.kind === 'credit' ? '<span class="tag crtag">Credit memo</span>' : '<span class="tag">Invoice</span>';
+    const body = rows.map((r) => {
+      if (r.status === 'posted') bal = Math.round((bal + r.total) * 100) / 100;
+      const shown = P.k === 'all' || acKind(r) === P.k;
+      const what = r.status === 'void' ? 'Voided ' + esc(shortDate(String(r.void_at || '').slice(0, 10))) + (r.void_by ? ' by ' + esc(r.void_by) : '') + (r.void_why ? ' · ' + esc(r.void_why) : '') :
+        r.units + ' ' + (r.kind === 'credit' ? 'back' : (r.units === 1 ? 'item' : 'items')) + (r.by ? ' · ' + esc(r.by) : '');
+      return '<tr class="acr' + (r.status === 'void' ? ' acvoid' : '') + '" data-acopen="' + r.id + '" data-num="' + r.number + '"' + (shown ? '' : ' hidden') + '>' +
+        '<td>' + esc(shortDate(r.date, true)) + '</td><td>' + tag(r) + '</td><td class="acnum">' + r.number + '</td><td class="acsub">' + what + '</td>' +
+        '<td class="n' + (r.total < 0 ? ' acneg' : '') + '">' + money$(r.total) + '</td><td class="n">' + (r.status === 'void' ? '<span class="mut">—</span>' : money$(bal)) + '</td><td class="n acgo">›</td></tr>';
+    }).join('');
+    const table = '<div class="cc"><table class="t tsm actab"><thead><tr><th>Date</th><th>What</th><th>#</th><th></th><th class="n">Amount</th><th class="n">They owe</th><th></th></tr></thead><tbody id="ac-rows">' +
+      '<tr class="acstart"><td>' + esc(shortDate(dayBefore, true)) + '</td><td colspan="4" class="acsub">Owed before ' + esc(shortDate(f)) + (D.opening && D.before === D.opening ? ' · starting balance from your old system' : '') + '</td><td class="n"><b>' + money$(D.before) + '</b></td><td></td></tr>' +
+      (rows.length ? body : '<tr><td colspan="7" class="empty">No invoices or credits in these dates</td></tr>') +
+      '</tbody></table><p class="fmsg" id="ac-none" hidden>No invoice with that number in these dates</p></div>';
+    return top + boxes + chips + table;
+  }
+  function bindAcct() {
+    const P = acState();
+    acLoad();
+    $$('[data-acpre]').forEach((b) => { b.onclick = () => { if (b.dataset.acpre === 'custom' && P.pre !== 'custom') { const [f, t] = acRange(P); P.from = f; P.to = t; } P.pre = b.dataset.acpre; X.render(); }; });
+    const fr = q('#ac-from'), to = q('#ac-to');
+    const pickDates = () => { if (fr.value && to.value && to.value >= fr.value) { P.from = fr.value; P.to = to.value; X.render(); } };
+    if (fr) fr.onchange = pickDates; if (to) to.onchange = pickDates;
+    $$('[data-ack]').forEach((b) => { b.onclick = () => { P.k = b.dataset.ack; X.render(); }; });
+    const box = q('#ac-q');
+    const filt = () => {
+      const v = box.value.replace(/\D/g, ''); P.q = box.value; let any = 0;
+      $$('#ac-rows tr.acr').forEach((r) => { const k = r.classList.contains('acvoid') ? 'void' : (r.querySelector('.crtag') ? 'credit' : 'invoice');
+        const ok = (P.k === 'all' || k === P.k) && (!v || String(r.dataset.num).includes(v)); r.hidden = !ok; if (ok) any++; });
+      const nn = q('#ac-none'); if (nn) nn.hidden = !(v && !any);
+    };
+    if (box) { box.oninput = filt; if (P.q) filt(); }
+    $$('[data-acopen]').forEach((r) => { r.onclick = () => X.openInvoice && X.openInvoice(r.dataset.acopen); });
+  }
   function custHistHtml(c) {
     const say1 = (x) => {
       const d = x.detail || {};
@@ -745,6 +828,7 @@ export function makeCatalog(X) {
     if (q('#cu-next')) q('#cu-next').onclick = () => { if (leaveCust()) openCust(list[at + 1].id, S.tab); };
     if (q('#cu-edit')) q('#cu-edit').onclick = () => { S.tab = 'details'; X.render(); };
     $$('[data-cutab]').forEach((b) => { b.onclick = () => { S.tab = b.dataset.cutab; S.err = ''; X.render(); }; });
+    if (S.tab === 'account' && A.cu.data) bindAcct();
     // Price level: hidden; Show reveals it for 5 seconds, without redrawing the page.
     const sh = q('#cu-lvshow');
     if (sh) sh.onclick = () => {

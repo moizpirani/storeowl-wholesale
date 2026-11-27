@@ -76,6 +76,14 @@ test('credit memo in the database: last price, numbered with invoices, lowers wh
   assert.equal(d.sale.status, 'void');
   const log = await db.query("select what from change_log where company_id = $1 order by id", [cid]);
   assert.ok(log.rows.some((r) => r.what === 'credit memo posted') && log.rows.some((r) => r.what === 'invoice voided'));
+  // The customer's Invoices & payments tab: all three in date order, the void listed but not counted.
+  await db.query("update sales set invoice_date = '2026-10-20' where id = $1", [inv.id]);
+  const ac = await one(db, 'select customer_account($1, $2, $3, $4)', [cid, cu.id, '2026-11-01', '2026-11-30']);
+  assert.equal(ac.rows.length, 0 + (await one(db, "select count(*)::int from sales where company_id = $1 and invoice_date between '2026-11-01' and '2026-11-30' and status in ('posted','void')", [cid])));
+  const all = await one(db, 'select customer_account($1, $2, $3, $4)', [cid, cu.id, '2026-10-01', '2026-12-31']);
+  assert.deepEqual(all.rows.map((r) => [r.number, r.status, r.kind]), [[1001, 'void', 'invoice'], [1002, 'posted', 'credit'], [1003, 'posted', 'credit']]);
+  assert.equal(Number(all.before), 0);
+  await fails(db, 'select customer_account($1, $2, $3, $4)', [cid, cu.id, '2026-12-01', '2026-11-01'], /pick the dates/);
 });
 
 test('a credit memo prints, PDFs and EDIs as a credit (minus cases, minus total)', () => {

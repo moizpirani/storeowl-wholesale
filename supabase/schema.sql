@@ -1713,3 +1713,28 @@ end $$;
 revoke execute on function credit_prices(uuid,uuid), sale_void(uuid,uuid,text) from public, anon;
 grant execute on function credit_prices(uuid,uuid), sale_void(uuid,uuid,text) to authenticated;
 revoke execute on function _last_paid(uuid,uuid), _credit_price(uuid,uuid,int,jsonb) from public, anon, authenticated;
+
+-- =====================================================================
+-- Customer → Invoices & payments tab (2026-11-27)
+-- One customer's invoices, credit memos and voids between two dates, with what they owed before the first date and after the
+-- last (void ones are listed but never counted). Payments join this list in Phase 3.
+-- =====================================================================
+create or replace function customer_account(p_company uuid, p_customer uuid, p_from date, p_to date) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c customers; bef numeric; rows jsonb;
+begin
+  perform _need(p_company, 'staff');
+  select * into c from customers where id = p_customer and company_id = p_company;
+  if c.id is null then raise exception 'customer not found'; end if;
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'pick the dates'; end if;
+  if p_to - p_from > 800 then raise exception 'pick up to two years at a time'; end if;
+  select coalesce(c.opening, 0) + coalesce(sum(total), 0) into bef from sales
+    where company_id = p_company and customer_id = c.id and status = 'posted' and invoice_date < p_from;
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'kind', kind, 'status', status, 'number', number, 'date', invoice_date, 'total', total,
+      'units', units, 'lines', jsonb_array_length(lines), 'by', posted_by, 'void_at', void_at, 'void_by', void_by, 'void_why', void_why)
+      order by invoice_date, number), '[]'::jsonb) into rows
+    from sales where company_id = p_company and customer_id = c.id and status in ('posted','void') and invoice_date between p_from and p_to;
+  return jsonb_build_object('before', round(bef, 2), 'opening', coalesce(c.opening, 0), 'rows', rows);
+end $$;
+revoke execute on function customer_account(uuid,uuid,date,date) from public, anon;
+grant execute on function customer_account(uuid,uuid,date,date) to authenticated;

@@ -487,3 +487,19 @@ h2.mt{margin-top:18px}
 .ivvoidask{margin:4px 0 12px;border-color:#F3C9C9}
 .ivvoidlnk{margin:2px 0 10px;display:block;text-align:left;padding:0}
 .tag.bad{color:var(--red);background:#FDECEC}.lnk.bad{color:var(--red)}
+
+/* Customer → Invoices & payments */
+.acbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 12px}.acbar .seg{margin:0}
+.acwhen{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+.acdt{display:inline-flex;align-items:center;gap:8px}.acdt .inp{width:160px}.acdt span{color:var(--muted);font-size:14px}
+.ackpis{grid-template-columns:repeat(5,1fr)}
+.acrow2{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.acrow2 .chips{margin:0 0 10px}
+.acq{width:220px;margin:0 0 10px}
+.actab tr.acr{cursor:pointer}.actab tr.acr:hover td{background:#F8FAFC}
+.actab .acnum{font-weight:600;font-variant-numeric:tabular-nums}
+.actab td.n{font-variant-numeric:tabular-nums}.actab .acneg{color:var(--teal)}
+.actab tr.acvoid td{color:var(--muted)}.actab tr.acvoid .acnum,.actab tr.acvoid td.n:nth-child(5){text-decoration:line-through}
+.actab tr.acstart td{background:#F8FAFC;color:var(--muted)}
+.actab .acgo{color:var(--muted);width:24px}
+@media (max-width:1100px){.ackpis{grid-template-columns:repeat(3,1fr)}}
+.actab td.acsub{font-size:13px;color:var(--muted)}.actab .tag{white-space:nowrap}

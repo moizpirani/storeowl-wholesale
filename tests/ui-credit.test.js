@@ -74,4 +74,22 @@ test('Counter: return or credit, then void an invoice', async () => {
   assert.match($('.ivpan').textContent, /Void/);
   const s = db.S.sales.find((x) => x.number === 1001);
   assert.equal(s.status, 'void');
+
+  // Customer → Invoices & payments: everything for that store in one place, by date.
+  $('[data-go="customers"]').click(); await tick(10);
+  $('[data-cuopen]').click(); await tick(10);
+  $('[data-cutab="account"]').click(); await tick(10); checkTags('customer account');
+  assert.equal($$('#ac-rows tr.acr').length, 2, 'the invoice (void) and the credit');
+  assert.match($('.ackpis').textContent, /Credit memos-\$78\.40/);
+  assert.match($('.ackpis').textContent, /1 void not counted/);
+  assert.match($('.ackpis .nv').textContent, /-\$78\.40/, 'owes = the credit only');
+  $('[data-ack="void"]').click(); await tick(); assert.equal($$('#ac-rows tr.acr:not([hidden])').length, 1);
+  $('[data-ack="all"]').click(); await tick();
+  const box = $('#ac-q'); type(box, '1002'); assert.equal($('#ac-q'), box, 'typing never redraws');
+  assert.equal($$('#ac-rows tr.acr:not([hidden])').length, 1);
+  $('[data-acpre="last"]').click(); await tick(10);
+  assert.match($('#ac-rows').textContent, /No invoices or credits in these dates/);
+  $('[data-acpre="month"]').click(); await tick(10);
+  $$('[data-acopen]')[1].click(); await tick(10);
+  assert.match($('.ivpan').textContent, /Credit memo 1002/, 'a row opens it on the Invoices page');
 });

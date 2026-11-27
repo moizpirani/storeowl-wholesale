@@ -577,7 +577,7 @@ export function makeCounter(X) {
   function bindInvoices() {
     if (!A.ivs) {
       const cid = A.cid;
-      db.sales(cid, 'posted').then((l) => { if (A.cid !== cid) return; A.ivs = { list: l, q: '', sel: null }; if (A.view === 'invoices') X.render(); })
+      db.sales(cid, 'posted').then((l) => { if (A.cid !== cid) return; A.ivs = { list: l, q: '', sel: A.ivWant || null }; A.ivWant = null; if (A.view === 'invoices') X.render(); })
         .catch((e) => { A.ivs = { list: [], q: '', sel: null }; X.say(e.message, true); X.render(); });
       return;
     }

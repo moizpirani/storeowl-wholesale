@@ -79,6 +79,7 @@ export function makeDb(sb) {
     // Counter (Phase 2)
     saleSave: (id, p) => rpc('sale_save', { p_company: id, p }),
     sales: (id, status) => rpc('sales_list', { p_company: id, p_status: status }),
+    customerAccount: (id, cust, from, to) => rpc('customer_account', { p_company: id, p_customer: cust, p_from: from, p_to: to }),
     saleLast: (id, cust) => rpc('sale_last', { p_company: id, p_customer: cust }),
     creditPrices: (id, cust) => rpc('credit_prices', { p_company: id, p_customer: cust }),
     saleVoid: (id, sale, why) => rpc('sale_void', { p_company: id, p_sale: sale, p_why: why }),
@@ -506,6 +507,17 @@ export function makeFake(opts) {
         log(cid, kind === 'credit' ? 'credit memo posted' : 'invoice posted', { sale: s.id, number: s.number, customer: cu.id, total: s.total, license_reason: s.lic_reason || null });
       }
       return saleOut(s);
+    },
+    async customerAccount(cid, cust, from, to) {
+      need(cid, 'staff');
+      const c = S.customers.find((x) => x.id === cust && x.company_id === cid);
+      if (!c) throw new Error('Customer not found');
+      if (!from || !to || to < from) throw new Error('Pick the dates');
+      const mine = S.sales.filter((x) => x.company_id === cid && x.customer_id === cust && ['posted', 'void'].includes(x.status));
+      const before = Math.round(((c.opening || 0) + mine.filter((x) => x.status === 'posted' && x.invoice_date < from).reduce((a, x) => a + x.total, 0)) * 100) / 100;
+      const rows = mine.filter((x) => x.invoice_date >= from && x.invoice_date <= to).sort((a, b) => (a.invoice_date === b.invoice_date ? a.number - b.number : a.invoice_date < b.invoice_date ? -1 : 1))
+        .map((x) => ({ id: x.id, kind: x.kind || 'invoice', status: x.status, number: x.number, date: x.invoice_date, total: x.total, units: x.units, lines: (x.lines || []).length, by: x.posted_by, void_at: x.void_at || null, void_by: x.void_by || '', void_why: x.void_why || '' }));
+      return { before, opening: c.opening || 0, rows };
     },
     async sales(cid, status) {
       const m = need(cid, 'staff');
