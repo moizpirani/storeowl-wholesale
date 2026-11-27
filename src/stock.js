@@ -170,7 +170,7 @@ export function makeStock(X) {
       '<label class="f"><span>Invoice #</span><input class="inp" id="rv-num" placeholder="On their invoice" value="' + esc(e.number) + '" data-guide="stock-type-number"></label>' +
       '<label class="f"><span>Date</span><input class="inp" id="rv-date" type="date" value="' + esc(e.inv_date) + '" data-guide="stock-type-date"></label>' +
       '<label class="f"><span>Invoice total</span><input class="inp rvr" id="rv-tot" inputmode="decimal" placeholder="Bottom of the invoice" value="' + esc(e.inv_total) + '" data-guide="stock-type-total"></label>' +
-      '<span class="sp"></span><span class="tag grey">Typed in · ' + esc(myName()) + '</span></div>';
+      '<span class="sp"></span><span class="tag grey">Typed in</span></div>';
     const off = !e.supplier_id;
     const lines = e.lines.map(lineRow).join('');
     const add = '<tr class="rvadd"><td colspan="6"><div class="rvrel"><input class="inp rvq" id="rv-q" autocomplete="off" placeholder="' + (off ? 'Pick the supplier first' : 'Scan a barcode or type an item name, item # or their item #') + '" value="' + esc(e.q) + '"' + (off ? ' disabled' : '') + ' data-guide="stock-type-find">' +
@@ -180,7 +180,6 @@ export function makeStock(X) {
     const body = e.unk ? '<div class="rvside">' + table + unkHtml() + '</div>' : table;
     return top + body + totHtml() + (K().cw ? costsWinHtml() : '');
   }
-  const myName = () => { const c = X.co() || {}; return c.my_name || (A.me && A.me.email) || ''; };
   function supResHtml() {
     const e = E(), t = (e.sq || '').trim().toLowerCase();
     const l = (K().sups || []).filter((s) => !t || s.name.toLowerCase().includes(t)).slice(0, 6);
@@ -316,10 +315,12 @@ export function makeStock(X) {
         return '<td class="n">' + (p == null ? '—' : $(p) + (np !== p ? ' → <b>' + $(np) + '</b>' : '')) + '</td>'; }).join('') + '</tr>').join('');
     const op = (k, b, t) => '<label class="rvopt' + (w.mode === k ? ' on' : '') + '"><input type="radio" name="cw-mode" value="' + k + '"' + (w.mode === k ? ' checked' : '') + ' data-guide="stock-costs-mode"><span><b>' + b + '</b><small>' + t + '</small></span></label>';
     const n = new Set(w.list.map((c) => c.item_id)).size;
+    const ex = w.list.find((c) => c.before != null && Math.abs(c.after - c.before) >= 0.005);
+    const exd = ex ? dollars(Math.abs(ex.after - ex.before)) : '$1.00', exw = ex && ex.after < ex.before ? 'down' : 'up';
     return '<div class="ctmodal rvmodal"><div class="card rvwin"><h2>Costs ' + (w.list.some((c) => c.before == null || c.after > c.before) ? 'went up' : 'changed') + ' on ' + n + ' ' + plural('item', n) + '</h2>' +
       '<p class="sm mut">From invoice ' + esc(w.number) + '. Your prices don’t change unless you say so.</p>' +
       '<div class="cc rvcw"><table class="t tsm"><thead><tr><th>Item</th><th class="n">Cost</th>' + L.map((l) => '<th class="n">' + esc(l.name) + '</th>').join('') + '</tr></thead><tbody id="cw-rows">' + rows + '</tbody></table></div>' +
-      '<div class="rvopts">' + op('same', 'Add the same amount to every price', 'Cost up $1.10 → every level up $1.10') + op('margin', 'Keep the same margin', 'Each level keeps its % over cost') +
+      '<div class="rvopts">' + op('same', 'Add the same amount to every price', 'Cost ' + exw + ' ' + exd + ' → every level ' + exw + ' ' + exd) + op('margin', 'Keep the same margin', 'Each level keeps its % over cost') +
       op('none', 'Don’t change my prices', 'Only the cost is updated') + (w.rid ? op('keep', 'Don’t change the costs either', 'Leave costs and prices as they are') : '') + '</div>' +
       (w.rid ? '' : '<p class="sm mut">Prices change when you tap Receive.</p>') +
       '<p class="fmsg bad" id="cw-err"></p><div class="rowr"><button class="btn" id="cw-back" data-guide="stock-costs-back">Back</button><button class="btn amber" id="cw-ok" data-guide="stock-costs-confirm">' + (w.rid ? 'Use these' : 'Receive and use these prices') + '</button></div></div></div>';
@@ -352,7 +353,7 @@ export function makeStock(X) {
     }
     $$('[data-sktab]').forEach((b) => { b.onclick = () => { S.tab = b.dataset.sktab; S.view = null; if (S.tab === 'stock') S.stock = null; X.render(); }; });
     q('#sk-type').onclick = () => startEd(null);
-    $$('[data-skway]').forEach((b) => { b.onclick = () => { if (b.dataset.skway === 'type') startEd(null); else X.say('Coming next. For now, use Type it in.'); }; });
+    $$('[data-skway]').forEach((b) => { b.onclick = () => { if (b.dataset.skway === 'type') startEd(null); else { X.say('Coming next. For now, use Type it in.'); X.render(); } }; });
     $$('[data-skopen]').forEach((tr) => { tr.onclick = () => {
       const r = (S.list || []).find((x) => x.id === tr.dataset.skopen); if (!r) return;
       if (r.status === 'draft') return startEd(r);
@@ -454,7 +455,13 @@ export function makeStock(X) {
       if (s.value === 'case') { l.caseEd = true; X.render(); const c = q('[data-rvcn="' + s.dataset.rvu + '"]'); if (c) c.focus(); return; }
       const [sid, per, ...u] = s.value.split('|'); l.size_id = sid; l.per = +per; l.unit = u.join('|'); l.caseEd = false; X.render();
     }; });
-    $$('[data-rvcn]').forEach((i) => { i.oninput = () => { const l = e.lines[+i.dataset.rvcn], v = parseInt(i.value, 10); if (v >= 2) { l.per = v; l.unit = 'Case'; updNums(); } }; });
+    $$('[data-rvcn]').forEach((i) => {
+      i.oninput = () => { const l = e.lines[+i.dataset.rvcn], v = parseInt(i.value, 10); if (v >= 2) { l.per = v; l.unit = 'Case'; updNums(); } };
+      // Leaving the box (or Enter) shows "Case (10 cartons)" in the unit list and moves on to How many.
+      const done = () => { const k = +i.dataset.rvcn, l = e.lines[k]; if (+l.per >= 2) { l.caseEd = false; X.render(); const b = q('[data-rvqty="' + k + '"]'); if (b) { b.focus(); b.select(); } } };
+      i.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); done(); } };
+      i.onchange = done;
+    });
     $$('[data-rvrm]').forEach((b) => { b.onclick = () => { e.lines.splice(+b.dataset.rvrm, 1); X.render(); }; });
     // Unknown barcode panel.
     if (e.unk) bindUnk();
@@ -473,7 +480,7 @@ export function makeStock(X) {
     if (S.cw) bindCw();
   }
   // Add a line: the size and unit learned from this supplier, else the size scanned / the main size, at its cost now.
-  function addItem(it, z, pack) {
+  function addItem(it, z, pack, their) {
     const e = E(); if (!it) return;
     const lx = learned(e.supplier_id, it);
     const lz = lx && findSizeIn([it], lx.size_id);
@@ -482,6 +489,7 @@ export function makeStock(X) {
     else { const zz = z && sells(z) ? z : mainSize(it); line = { size_id: zz.id, unit: zz.name, per: 1, cost: zz.cost == null ? '' : String(zz.cost), their_no: '' }; }
     const at = e.lines.findIndex((l) => l.size_id === line.size_id && +l.per === +line.per);
     let i = at;
+    if (their) line.their_no = String(their).trim();
     if (at < 0) { line.qty = '1'; e.lines.push(line); i = e.lines.length - 1; }
     else e.lines[at].qty = String((+e.lines[at].qty || 0) + 1);
     e.q = ''; e.hi = 0; e.unk = null; e.err = '';
@@ -506,9 +514,8 @@ export function makeStock(X) {
         try {
           const it = await db.itemPut(A.cid, { name: u.name.trim(), category: u.cat, unit: (u.unit || 'each').trim(), age: ['beer', 'other'].includes(u.cat) ? (u.cat === 'beer' ? 21 : 0) : 21, sizes });
           A.items = (A.items || []).concat(it);
-          e.unk = null; addItem(it, it.sizes[0]);
-          const l = E().lines[E().lines.length - 1]; if (u.their) { l.their_no = u.their.trim(); X.render(); }
           X.say('✓ ' + it.name + ' added to Items (no prices yet)');
+          e.unk = null; addItem(it, it.sizes[0], false, u.their);
         } catch (er) { err(er.message); }
       };
     } else {
@@ -527,9 +534,8 @@ export function makeStock(X) {
           const saved = await db.itemPut(A.cid, p);
           A.items = items().map((x) => (x.id === saved.id ? saved : x));
           const z = saved.sizes.find((y) => y.id === u.size_id);
-          e.unk = null; addItem(saved, z, !sells(z));
-          const l = E().lines.find((y) => findSizeIn([saved], y.size_id)); if (l && u.their) { l.their_no = u.their.trim(); X.render(); }
           X.say('✓ Barcode linked to ' + saved.name);
+          e.unk = null; addItem(saved, z, !sells(z), u.their);
         } catch (er) { err(er.message); }
       };
     }

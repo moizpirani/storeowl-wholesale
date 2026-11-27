@@ -222,3 +222,32 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   "StoreOwl (monthly statements)", `stmt.lastrun`). The key lives only in `job_keys` (no one can read it). **On a new database: set
   `job_keys.url` to that app's address** (test = the git-test vercel.app link). `vercel.json` gives `api/send.js` 60 s. Tests: `statements`,
   `payments` (receipt), `ui-payments`.
+- **Phase 4, parts 1–3 (built 2026-11-27 on branch `phase4`, NOT on test yet; Moiz approved the pictures and said "start building";
+  database sections "Phase 4, part 1" and "part 2" at the end of schema.sql, not yet run on the test database):**
+  - **"You sell it" per size** (`item_sizes.sells`, default true; Moiz: the wholesaler only cares about the carton, the pack is there for the
+    EDI file). A size with sells = false: no cost / price needed (`itemIssues` skips it), never a Counter size button (`sellSizes`), never
+    sold (`_sale_price` refuses it), never a receiving unit; scanning its barcode = the item's main size you sell (`scanSize` → `pack: true`,
+    Counter note "You scanned the pack barcode · 1 carton was added"). EDI still sends it (`single_upc` = the n = 1 size's barcode).
+    At least one size must be sold. Demo packs / cans are sells = false.
+  - **More than one barcode per size** (Moiz: yes): table `size_upcs` (company, upc unique, size); `_upc_owner` checks a barcode against
+    main and extra barcodes; item panel "+ Another barcode" (`data-zu`, `data-zuadd`, `data-zurm`); `findUpc` / `sizeUpcs` match both;
+    Barcodes to add can add to a size that already has one (becomes an extra barcode).
+  - **Stock page** (`src/stock.js`, menu after Items): tabs Receive · Stock · Counts (coming next) · Suppliers. Receive = five ways in;
+    only **Type it in** works now (photo / email / supplier file / scan say "Coming next"). Type it in: supplier first (search, + New
+    supplier — anyone), invoice #, date, invoice total; one search box (barcode with or without zeros / check digit, name words, item #,
+    their item #); a line = {size_id (a size you sell), unit, per (Case = 10 cartons), qty, cost of one unit, their_no}; the unit and last
+    cost learned from that supplier fill in (`supplier_items`); "Case of …" makes a supplier unit; ▲/▼ cost change shown to managers+;
+    totals must match the typed invoice total (`recvCheck`) before **Receive**; **Save for later** (drafts on the Receive tab).
+    Unknown barcode: managers get a side panel **New item** (item_put, no prices) / **Link to an item I have** (adds the barcode, a size
+    with one gets a second barcode); staff are told to ask a manager.
+  - **Who changes costs** (Moiz: anyone can receive; only OWNERS change costs and prices): owner's Receive with cost changes opens the
+    costs window (Add the same amount · Keep the same margin · Don't change my prices) → `receiving_save` with `prices`; anyone else's
+    Receive puts stock in and sets `costs = 'waiting'` → owner's **Costs to check** list on the Receive tab (`receiving_costs`, also
+    "Don't change the costs either" = kept). `recvCosts` / `_recv_costs`: new cost per smallest unit × each sold size's n; `movePrice`.
+  - **Stock** = `stock_moves` (smallest unit): receive +, posted invoice −, credit for wrong / not-ordered + (damaged / expired don't go
+    back), void reverses, undo receive (managers, `receiving_undo`) −. Triggers `sales_stock` / `sales_stock_ins` on `sales`. Stock tab:
+    On the shelf · Set aside (suspended + review sales) · Can sell, filters All / Out / Count these (below zero). Stock starts at 0, so
+    items sold before receiving go below zero until Counts (next part) set the starting stock.
+  - Tests: `db-stock`, `ui-stock`. Still to come in Phase 4: Counts (starting stock), photo / PDF reading, forwarded emails, supplier
+    files (save each line's single UPC + units a case onto the item, sells = false — Moiz Nov 27), scan the boxes, Home "Needs you"
+    for costs to check, kept back (safety buffer). Later test only: box barcode on an EDI line when there's no single barcode.
