@@ -45,6 +45,8 @@ export function upcShow(u) {
   return u;
 }
 export function num(v) { if (v === '' || v == null) return null; const n = Number(String(v).replace(/[$,\s]/g, '')); return isFinite(n) ? n : NaN; }
+// $ in front, minus before the $ (a credit shows −$78.40, never $-78.40).
+export function dollars(v) { if (v == null || v === '' || !isFinite(v)) return ''; const n = Number(v); return (n < 0 && Math.abs(n) >= 0.005 ? '-$' : '$') + money(Math.abs(n)); }
 export function money(v) { return v == null || v === '' || !isFinite(v) ? '' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 export function margin(cost, price) { return cost == null || !price ? null : Math.round((1 - cost / price) * 1000) / 10; }
 
@@ -296,4 +298,51 @@ export function findUpc(items, code) {
     for (const z of it.sizes || []) if (z.upc && upcSame(c, z.upc)) return { it, z };
   }
   return null;
+}
+
+// ---------- Returns and credits (Phase 2, piece 4) ----------
+export const CREDIT_WHY = [['damaged', 'Damaged'], ['expired', 'Expired'], ['wrong', 'Wrong item'], ['notordered', 'Didn’t order'], ['other', 'Other']];
+export const creditWhy = (k) => (CREDIT_WHY.find((x) => x[0] === k) || [k, k || ''])[1];
+// A credit memo's lines: [{size_id, qty, reason}] for items coming back, or [{other: true, desc, amount, reason}] for money only.
+// Each item is credited at what this store last paid for that size (paid = {size_id: price}), else their price level today.
+// Credit lines are kept as minus quantities and minus amounts, the way a store's back office reads a credit.
+export function priceCredit(lines, items, level, paid) {
+  const ix = {};
+  (items || []).forEach((it) => (it.sizes || []).forEach((z) => { ix[z.id] = { it, z }; }));
+  let total = 0, count = 0;
+  const out = (lines || []).map((l) => {
+    const why = l.reason || '';
+    if (l.other) {
+      const a = num(l.amount), amt = a == null || isNaN(a) ? null : Math.round(a * 100) / 100;
+      if (amt != null) total -= amt;
+      return { other: true, size_id: null, item_id: null, name: String(l.desc || '').trim(), desc: l.desc || '', size: '', n: 1, unit_name: '', upc: '', category: 'credit', item_no: '', single_upc: '',
+        sizes: [], ordered: -1, shipped: -1, qty: 1, price: amt, off: 0, unit_price: amt, total: amt == null ? null : -amt, reason: why, from: 'other',
+        missing: !String(l.desc || '').trim() ? 'desc' : amt == null || amt <= 0 ? 'amount' : '' };
+    }
+    const f = ix[l.size_id];
+    const qty = Math.trunc(+l.qty || 0);
+    if (!f) return Object.assign({}, l, { qty, missing: 'gone' });
+    const { it, z } = f;
+    const last = paid && paid[z.id] != null ? +paid[z.id] : null;
+    const price = last != null ? last : z.prices && z.prices[level] != null ? +z.prices[level] : null;
+    const tot = price == null ? null : Math.round(price * qty * 100) / 100;
+    if (tot != null) total -= tot;
+    count += qty;
+    return { size_id: z.id, item_id: it.id, name: it.name, size: z.name, n: z.n, unit_name: it.unit, upc: z.upc, category: it.category, photo_url: it.photo_url || '',
+      item_no: it.item_no || '', single_upc: singleUpc(it), sizes: (it.sizes || []).map((y) => ({ id: y.id, name: y.name })),
+      ordered: -qty, shipped: -qty, qty, price, off: 0, unit_price: price, total: tot == null ? null : -tot, reason: why, from: last != null ? 'paid' : 'level',
+      missing: price == null ? 'price' : '' };
+  });
+  return { lines: out, total: Math.round(total * 100) / 100, count };
+}
+// Plain-words problem with a credit memo before it's saved, or ''.
+export function creditCheck(cr) {
+  if (!cr.lines.length) return 'Scan what’s coming back, or add a credit without an item.';
+  if (cr.lines.find((l) => l.missing === 'gone')) return 'An item on this credit isn’t in your list any more. Take it off.';
+  const np = cr.lines.find((l) => l.missing === 'price'); if (np) return np.name + ' (' + np.size + ') has no price to credit.';
+  if (cr.lines.find((l) => l.missing === 'desc')) return 'Say what the credit without an item is for.';
+  if (cr.lines.find((l) => l.missing === 'amount')) return 'Type the amount of the credit without an item.';
+  if (cr.lines.find((l) => !l.other && !(Number.isInteger(l.qty) && l.qty >= 1))) return 'How many came back? Whole numbers, 1 or more.';
+  const nr = cr.lines.find((l) => !l.reason); if (nr) return 'Pick why ' + (nr.other ? 'the credit is given' : nr.name + ' came back') + '.';
+  return '';
 }

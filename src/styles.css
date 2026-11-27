@@ -475,3 +475,15 @@ h2.mt{margin-top:18px}
 .hnrow{display:flex;align-items:center;gap:12px}
 .hnrow b{flex:1}
 .ctlicchip{cursor:pointer;font:inherit}
+/* Returns and credit memos */
+.tag.crtag{background:#E6F4F1;color:var(--teal);border-color:#BFE3DC}
+.ctcr{color:var(--teal)}
+.ctwy{min-width:120px;height:34px}.ctwy.need{border-color:var(--orange);background:#FFF8EC}
+.ctod{width:100%}.ctoa{width:96px}
+.ctcrt .ctnote{display:block}
+.ctbtns.one{grid-template-columns:1fr}
+.ivvoid td{color:var(--muted)}.ivvoid td b{text-decoration:line-through}
+.ivvoidbar{border:1px solid #F3C9C9;background:#FDF2F2;color:var(--red);border-radius:8px;padding:10px 12px;margin:8px 0}.ivvoidbar .sm{display:block;color:var(--muted);margin-top:4px}
+.ivvoidask{margin-top:12px;border-color:#F3C9C9}
+.ivvoidlnk{margin-top:12px;display:inline-block}
+.tag.bad{color:var(--red);background:#FDECEC}.lnk.bad{color:var(--red)}

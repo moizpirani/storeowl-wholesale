@@ -78,7 +78,8 @@ export function makeInvUi(X) {
   // C.done = {sale (from sale_save), I (loaded), P (choices)}
   function doneHtml(C) {
     const D = C.done, s = D.sale;
-    const head = '<div class="ctok">✓</div><h2>Invoice ' + esc(s.number) + ' posted</h2><p>' + X.money(s.total) + ' · charged to account</p>';
+    const cr = s.kind === 'credit';
+    const head = '<div class="ctok">✓</div><h2>' + (cr ? 'Credit memo ' : 'Invoice ') + esc(s.number) + ' posted</h2><p>' + X.money(s.total) + (cr ? ' · taken off what they owe' : ' · charged to account') + '</p>';
     if (!D.I) return '<h1>Counter</h1><div class="card ctdone">' + head + '<p class="sm">Getting the invoice ready…</p></div>';
     const any = D.P.print || D.P.email || D.P.edi;
     return '<h1>Counter</h1><div class="card ctdone">' + head + '<h3 class="ivh">Send it</h3>' + choicesHtml(D.P, D.I, 'counter-done') +
@@ -100,8 +101,9 @@ export function makeInvUi(X) {
       nb.disabled = true; nb.textContent = 'Sending…';
       const r = await run(D.P, D.I);
       after();
-      if (r.bad.length) X.say('Invoice ' + D.sale.number + (r.said.length ? ' ' + r.said.join(', ') + '. ' : '. ') + r.bad.join(' '), true);
-      else X.say('✓ Invoice ' + D.sale.number + ' ' + r.said.join(', '));
+      const nm = (D.sale.kind === 'credit' ? 'Credit memo ' : 'Invoice ');
+      if (r.bad.length) X.say(nm + D.sale.number + (r.said.length ? ' ' + r.said.join(', ') + '. ' : '. ') + r.bad.join(' '), true);
+      else X.say('✓ ' + nm + D.sale.number + ' ' + r.said.join(', '));
       A.ivs = null; X.render();
     };
     if (nb) nb.onclick = () => go(next);

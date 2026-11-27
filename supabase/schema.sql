@@ -1519,3 +1519,197 @@ end $$;
 
 revoke execute on function invoice_data(uuid,uuid), sale_sent(uuid,uuid,jsonb) from public, anon;
 grant execute on function invoice_data(uuid,uuid), sale_sent(uuid,uuid,jsonb) to authenticated;
+
+-- =====================================================================
+-- Phase 2, piece 4: returns, credit memos and voiding an invoice (2026-11-27)
+-- A credit memo is a sale of kind 'credit': its lines are minus quantities and minus amounts (the way a store's back office
+-- reads a credit), numbered in the same series as invoices, and it lowers what the store owes. Items are credited at what this
+-- store last paid for that size, else their price level today. Money-only lines ("credit without an item") have no size.
+-- Staff can ring up a credit and send it for review; only owners / managers post one. A void invoice is kept, never deleted.
+-- =====================================================================
+alter table sales add column if not exists kind text not null default 'invoice';
+alter table sales add column if not exists void_at timestamptz;
+alter table sales add column if not exists void_by text not null default '';
+alter table sales add column if not exists void_why text not null default '';
+alter table sales drop constraint if exists sales_kind_check;
+alter table sales add constraint sales_kind_check check (kind in ('invoice','credit'));
+alter table sales drop constraint if exists sales_status_check;
+alter table sales add constraint sales_status_check check (status in ('suspended','review','posted','cancelled','void'));
+
+-- What this store last paid for each size (posted invoices only), for crediting.
+create or replace function _last_paid(p_company uuid, p_customer uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_object_agg(sid, price), '{}'::jsonb) from (
+    select distinct on (l->>'size_id') l->>'size_id' sid, l->'unit_price' price
+    from sales s, jsonb_array_elements(s.lines) l
+    where s.company_id = p_company and s.customer_id = p_customer and s.status = 'posted' and s.kind = 'invoice'
+      and l->>'size_id' is not null and coalesce((l->>'shipped')::int, 0) > 0 and l->'unit_price' is not null
+    order by l->>'size_id', s.posted_at desc) x $$;
+
+create or replace function credit_prices(p_company uuid, p_customer uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  return _last_paid(p_company, p_customer);
+end $$;
+
+-- Price a credit memo: [{size_id, qty, reason}] or [{other:true, desc, amount, reason}] → {lines, total (minus), units}.
+create or replace function _credit_price(p_company uuid, p_customer uuid, p_level int, p_lines jsonb) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare x jsonb; out jsonb := '[]'::jsonb; paid jsonb := _last_paid(p_company, p_customer); z item_sizes; i items; q int; pr numeric; amt numeric; tot numeric := 0; units int := 0; why text; su text;
+begin
+  for x in select * from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) loop
+    why := coalesce(x->>'reason','');
+    if why not in ('damaged','expired','wrong','notordered','other') then raise exception 'pick why each line is credited'; end if;
+    if coalesce((x->>'other')::boolean, false) then
+      amt := round(_num(x->'amount'), 2);
+      if length(trim(coalesce(x->>'desc',''))) = 0 then raise exception 'say what the credit without an item is for'; end if;
+      if amt is null or amt <= 0 then raise exception 'type the amount of the credit without an item'; end if;
+      out := out || jsonb_build_array(jsonb_build_object('other', true, 'size_id', null, 'item_id', null, 'name', left(trim(x->>'desc'), 80), 'size', '', 'n', 1, 'unit_name', '',
+        'upc', '', 'item_no', '', 'single_upc', '', 'category', 'credit', 'ordered', -1, 'shipped', -1, 'qty', 1, 'price', amt, 'off', 0, 'unit_price', amt,
+        'total', -amt, 'reason', why, 'from', 'other'));
+      tot := tot - amt;
+    else
+      select * into z from item_sizes where id = nullif(x->>'size_id','')::uuid and company_id = p_company;
+      if z.id is null then raise exception 'an item on this credit isn''t in your list any more'; end if;
+      select * into i from items where id = z.item_id;
+      q := coalesce((x->>'qty')::int, 0);
+      if q < 1 then raise exception 'how many came back? 1 or more'; end if;
+      pr := coalesce(_num(paid -> z.id::text), _num(z.prices -> (p_level::text)));
+      if pr is null then raise exception '% (%) has no price to credit', i.name, z.name; end if;
+      select coalesce((select y.upc from item_sizes y where y.item_id = i.id and y.n = 1 and y.upc <> '' order by y.pos limit 1), '') into su;
+      out := out || jsonb_build_array(jsonb_build_object('size_id', z.id, 'item_id', i.id, 'name', i.name, 'size', z.name, 'n', z.n, 'unit_name', i.unit, 'upc', z.upc,
+        'item_no', i.item_no, 'single_upc', su, 'category', i.category, 'ordered', -q, 'shipped', -q, 'qty', q, 'price', pr, 'off', 0, 'unit_price', pr,
+        'total', -round(pr * q, 2), 'reason', why, 'from', case when paid ? z.id::text then 'paid' else 'level' end));
+      tot := tot - round(pr * q, 2); units := units + q;
+    end if;
+  end loop;
+  return jsonb_build_object('lines', out, 'total', tot, 'units', units);
+end $$;
+
+-- Save a sale or a credit memo. p = {id?, kind? invoice|credit, customer_id, lines, action: suspend|review|complete|cancel, why?, lic_reason?}
+create or replace function sale_save(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r text := _need(p_company, 'staff'); act text := p->>'action'; s sales; cust customers; pr jsonb; num int; sid uuid; who text := _my_name(p_company); k text;
+begin
+  if act not in ('suspend','review','complete','cancel') then raise exception 'unknown action'; end if;
+  sid := nullif(p->>'id','')::uuid;
+  if sid is not null then
+    select * into s from sales where id = sid and company_id = p_company for update;
+    if s.id is null then raise exception 'sale not found'; end if;
+    if s.status not in ('suspended','review') then raise exception 'this sale is already %', case s.status when 'posted' then 'an invoice' when 'void' then 'void' else 'cancelled' end; end if;
+    if s.status = 'review' and r = 'staff' then raise exception 'an owner or manager finishes sales sent for review'; end if;
+  end if;
+  k := coalesce(s.kind, nullif(p->>'kind',''), 'invoice');
+  if k not in ('invoice','credit') then raise exception 'unknown kind'; end if;
+  if act = 'cancel' then
+    if s.id is null then raise exception 'nothing to cancel'; end if;
+    update sales set status = 'cancelled', updated_at = now() where id = s.id;
+    perform _log(p_company, case when k = 'credit' then 'credit cancelled' else 'sale cancelled' end, jsonb_build_object('sale', s.id, 'customer', s.customer_id, 'was', s.status, 'total', s.total));
+    return _sale_json(s.id);
+  end if;
+  select * into cust from customers where id = coalesce(nullif(p->>'customer_id','')::uuid, s.customer_id) and company_id = p_company;
+  if cust.id is null then raise exception 'pick a customer'; end if;
+  if jsonb_array_length(coalesce(p->'lines','[]'::jsonb)) = 0 then raise exception 'scan at least one item'; end if;
+  if k = 'credit' then
+    if act = 'suspend' then raise exception 'a credit is finished now or sent for review'; end if;
+    if act = 'complete' and r = 'staff' then raise exception 'send the credit for review: an owner or manager posts it'; end if;
+    pr := _credit_price(p_company, cust.id, cust.level, p->'lines');
+  else
+    pr := _sale_price(p_company, cust.level, p->'lines');
+    if act = 'complete' and (pr->>'units')::int = 0 then raise exception 'nothing is shipped on this sale'; end if;
+  end if;
+  if act = 'review' and length(trim(coalesce(p->>'why',''))) = 0 then raise exception 'say what the manager should check'; end if;
+  if s.id is null then
+    insert into sales(company_id, customer_id, status, by_name, kind) values (p_company, cust.id, 'suspended', who, k) returning * into s;
+  end if;
+  update sales set customer_id = cust.id, lines = pr->'lines', total = (pr->>'total')::numeric, units = (pr->>'units')::int, updated_at = now(),
+    lic_reason = left(coalesce(nullif(trim(p->>'lic_reason'),''), lic_reason), 200) where id = s.id;
+  if act = 'suspend' then
+    update sales set status = 'suspended' where id = s.id;
+    perform _log(p_company, 'sale suspended', jsonb_build_object('sale', s.id, 'customer', cust.id, 'total', pr->'total'));
+  elsif act = 'review' then
+    update sales set status = 'review', why = left(trim(p->>'why'), 300), sent_at = now() where id = s.id;
+    perform _log(p_company, case when k = 'credit' then 'credit sent for review' else 'sale sent for review' end,
+      jsonb_build_object('sale', s.id, 'customer', cust.id, 'why', trim(p->>'why'), 'total', pr->'total'));
+  else
+    update companies set next_invoice = next_invoice + 1 where id = p_company returning next_invoice - 1 into num;
+    update sales set status = 'posted', number = num, posted_at = now(), posted_by = who,
+      invoice_date = case when s.status = 'review' then coalesce(s.sent_at, now())::date else current_date end where id = s.id;
+    perform _log(p_company, case when k = 'credit' then 'credit memo posted' else 'invoice posted' end, jsonb_build_object('sale', s.id, 'number', num, 'customer', cust.id, 'total', pr->'total',
+      'license_reason', nullif(trim(coalesce(p->>'lic_reason','')),'')));
+  end if;
+  return _sale_json(s.id);
+end $$;
+
+-- Void an invoice or credit memo made by mistake: kept with who, when and why; it no longer counts in what the store owes.
+create or replace function sale_void(p_company uuid, p_sale uuid, p_why text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s sales; who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'manager');
+  select * into s from sales where id = p_sale and company_id = p_company for update;
+  if s.id is null then raise exception 'invoice not found'; end if;
+  if s.status = 'void' then raise exception 'this is already void'; end if;
+  if s.status <> 'posted' then raise exception 'only a posted invoice or credit can be voided'; end if;
+  if length(trim(coalesce(p_why,''))) = 0 then raise exception 'say why it''s void'; end if;
+  update sales set status = 'void', void_at = now(), void_by = who, void_why = left(trim(p_why), 300), updated_at = now() where id = s.id;
+  perform _log(p_company, case when s.kind = 'credit' then 'credit memo voided' else 'invoice voided' end,
+    jsonb_build_object('sale', s.id, 'number', s.number, 'customer', s.customer_id, 'total', s.total, 'why', trim(p_why)));
+  return _sale_json(s.id);
+end $$;
+
+-- Lists: suspended / review as before; posted = invoices and credits, void ones included (newest first).
+create or replace function sales_list(p_company uuid, p_status text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r text := _need(p_company, 'staff');
+begin
+  if p_status not in ('suspended','review','posted') then raise exception 'unknown list'; end if;
+  if p_status = 'review' and r = 'staff' then raise exception 'only owners and managers see sales sent for review'; end if;
+  return coalesce((select jsonb_agg(j order by (j->>'created_at') desc) from (
+    select _sale_json(id) j from sales where company_id = p_company
+      and (status = p_status or (p_status = 'posted' and status = 'void'))
+    order by created_at desc limit case when p_status = 'posted' then 300 else 1000 end) x), '[]'::jsonb);
+end $$;
+
+create or replace function sale_last(p_company uuid, p_customer uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  return (select _sale_json(id) from sales where company_id = p_company and customer_id = p_customer and status = 'posted' and kind = 'invoice' order by posted_at desc limit 1);
+end $$;
+
+create or replace function invoice_data(p_company uuid, p_sale uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s sales;
+begin
+  perform _need(p_company, 'staff');
+  select * into s from sales where id = p_sale and company_id = p_company;
+  if s.id is null then raise exception 'invoice not found'; end if;
+  if s.status not in ('posted','void') then raise exception 'only a completed sale is an invoice'; end if;
+  return jsonb_build_object('sale', _sale_json(s.id), 'customer', _cust_json(s.customer_id), 'company', _company_json(p_company));
+end $$;
+
+create or replace function sale_sent(p_company uuid, p_sale uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare k text := p->>'kind'; who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'staff');
+  if k not in ('print','email','edi','pdf','file') then raise exception 'unknown kind'; end if;
+  if not exists (select 1 from sales where id = p_sale and company_id = p_company and status in ('posted','void')) then raise exception 'invoice not found'; end if;
+  update sales set sends = (select coalesce(jsonb_agg(x order by ord), '[]'::jsonb) from (
+      select x, ord from jsonb_array_elements(sends || jsonb_build_array(jsonb_build_object('kind', k, 'to', left(coalesce(p->>'to',''), 200),
+        'ok', coalesce((p->>'ok')::boolean, true), 'err', left(coalesce(p->>'err',''), 300), 'by', who, 'at', now()))) with ordinality t(x, ord)
+      order by ord desc limit 50) z)
+  where id = p_sale;
+  if k in ('email','edi') then
+    perform _log(p_company, case when coalesce((p->>'ok')::boolean, true) then 'invoice emailed' else 'invoice email failed' end,
+      jsonb_build_object('sale', p_sale, 'kind', k, 'to', p->>'to', 'err', nullif(p->>'err','')));
+  end if;
+  return _sale_json(p_sale);
+end $$;
+
+revoke execute on function credit_prices(uuid,uuid), sale_void(uuid,uuid,text) from public, anon;
+grant execute on function credit_prices(uuid,uuid), sale_void(uuid,uuid,text) to authenticated;
+revoke execute on function _last_paid(uuid,uuid), _credit_price(uuid,uuid,int,jsonb) from public, anon, authenticated;

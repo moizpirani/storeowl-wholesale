@@ -9,7 +9,7 @@
 //   C + code (3) + name + amount in cents (8)                                                      = a charge
 // The barcode is always the single pack's (what the store's register scans), never the carton's.
 
-import { catName, termName, licName, plural, shortDate, cleanUpc, money } from './rules.js';
+import { catName, termName, licName, plural, shortDate, cleanUpc, money, dollars, creditWhy } from './rules.js';
 import { pdfDoc, fit } from './pdf.js';
 
 // ---------- Settings → Invoices ----------
@@ -47,12 +47,15 @@ const CIG = 'cigarettes';
 export function sizeText(l) { return l.size + (l.n > 1 ? ' · ' + l.n + ' ' + plural(l.unit_name || 'each', l.n) : ''); }
 export function invModel(o) {
   const { sale, co, cust } = o, s = invSettings(co), c = cust || sale.customer || {};
-  const lines = (sale.lines || []).map((l) => Object.assign({}, l, { short: Math.max((+l.ordered || 0) - (+l.shipped || 0), 0) }));
+  const cr = sale.kind === 'credit';
+  // A credit memo shows how many came back (its lines are kept as minus numbers) and why.
+  const lines = (sale.lines || []).map((l) => Object.assign({}, l, cr ? { back: Math.abs(+l.shipped || 0), why: creditWhy(l.reason), short: 0, catName: l.other ? 'Credit' : '' }
+    : { short: Math.max((+l.ordered || 0) - (+l.shipped || 0), 0) }));
   const groups = [];
   lines.forEach((l) => {
     let g = groups.find((x) => x.cat === l.category);
-    if (!g) { g = { cat: l.category, name: catName(l.category), lines: [], sub: 0, units: 0 }; groups.push(g); }
-    g.lines.push(l); g.sub = r2(g.sub + (+l.total || 0)); g.units += +l.shipped || 0;
+    if (!g) { g = { cat: l.category, name: l.category === 'credit' ? 'Credits without an item' : catName(l.category), lines: [], sub: 0, units: 0 }; groups.push(g); }
+    g.lines.push(l); g.sub = r2(g.sub + (+l.total || 0)); g.units += cr ? (l.other ? 0 : l.back) : +l.shipped || 0;
   });
   const cig = r2(lines.filter((l) => l.category === CIG).reduce((a, l) => a + (+l.total || 0), 0));
   const total = r2(+sale.total || lines.reduce((a, l) => a + (+l.total || 0), 0));
@@ -60,14 +63,16 @@ export function invModel(o) {
   const fresh = !!o.fresh && owesNow != null;
   const lic = (c.licenses || []).filter((x) => (x.number || '').trim()).map((x) => ({ name: licName(x.kind), number: x.number, expires: x.expires }));
   return {
+    kind: cr ? 'credit' : 'invoice', title: cr ? 'CREDIT MEMO' : 'INVOICE', word: cr ? 'Credit memo' : 'Invoice',
+    void: sale.status === 'void' ? { by: sale.void_by || '', at: sale.void_at || '', why: sale.void_why || '' } : null,
     num: sale.number, date: sale.invoice_date, soldBy: sale.posted_by || sale.by_name || '',
     seller: { name: co.name || '', lines: addrLines(co), phone: co.phone || '', email: co.email || '',
       lic: String(s.lic || '').split(/\n+/).map((x) => x.trim()).filter(Boolean), msa: (s.msa || '').trim() },
     buyer: { name: c.name || '', store_no: c.store_no || '', lines: addrLines(c), ship_to: c.ship_to || '', lic },
     terms: termName(c.terms), groups, lines,
-    sums: { cig, other: r2(total - cig), total, units: lines.reduce((a, l) => a + (+l.shipped || 0), 0) },
+    sums: { cig, other: r2(total - cig), total, units: lines.reduce((a, l) => a + (cr ? (l.other ? 0 : l.back) : +l.shipped || 0), 0) },
     owes: s.owes && owesNow != null ? (fresh ? { before: r2(owesNow - total), now: owesNow } : { asOf: o.today || '', now: owesNow }) : null,
-    tax: cig > 0 ? taxText(co, s) : '', footer: (s.footer || '').trim(), sign: !!s.sign,
+    tax: cig > 0 && !cr ? taxText(co, s) : '', footer: (s.footer || '').trim(), sign: !!s.sign,
     show: { photos: !!s.photos, barcodes: !!s.barcodes }, lic_reason: sale.lic_reason || ''
   };
 }
@@ -79,7 +84,7 @@ function addrLines(x) {
   if (csz) a.push(csz);
   return a;
 }
-const $ = (v) => '$' + money(v);
+const $ = (v) => dollars(v);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---------- UPC-A barcode (a real one a scanner reads) ----------
@@ -117,30 +122,33 @@ export const PRINT_CSS = '@page{size:letter;margin:.45in}.inv{font:10px/1.3 "Pub
   '.inv .iv-was{text-decoration:line-through;color:#7A8493;font-size:8.5px;display:block}.inv .iv-short{color:#B4570A;font-weight:600}.inv .iv-up{font-size:8.5px;color:#3A4658}' +
   '.inv .iv-sums{display:flex;justify-content:space-between;gap:16px;margin-top:10px}.inv .iv-sums table{width:auto;min-width:230px}.inv .iv-sums td{border:0;padding:2px 5px}' +
   '.inv .iv-tot td{font-size:13px;font-weight:800;border-top:2px solid #0F1B2D}.inv .iv-tax{margin-top:8px;font-weight:700}.inv .iv-ft{margin-top:10px;font-size:9px;color:#3A4658;white-space:pre-line}' +
-  '.inv .iv-sig{margin-top:22px;display:flex;gap:30px}.inv .iv-sig span{flex:1;border-top:1px solid #0F1B2D;padding-top:2px;font-size:8.5px}';
+  '.inv .iv-void{margin:8px 0 0;padding:6px 8px;border:2px solid #B91C1C;color:#B91C1C;font-weight:800;font-size:12px;text-align:center}.inv .iv-sig{margin-top:22px;display:flex;gap:30px}.inv .iv-sig span{flex:1;border-top:1px solid #0F1B2D;padding-top:2px;font-size:8.5px}';
 
 export function invoiceHtml(M) {
   const seller = '<div><h1>' + esc(M.seller.name) + '</h1>' + M.seller.lines.map((x) => '<div>' + esc(x) + '</div>').join('') +
     '<div>' + esc([M.seller.phone, M.seller.email].filter(Boolean).join(' · ')) + '</div>' +
     (M.seller.lic.length || M.seller.msa ? '<div class="iv-lic">' + M.seller.lic.map(esc).join('<br>') + (M.seller.msa ? (M.seller.lic.length ? '<br>' : '') + 'MSA ID ' + esc(M.seller.msa) : '') + '</div>' : '') + '</div>';
-  const head = '<div class="iv-ih">' + seller + '<div class="iv-ino">INVOICE<b>#' + esc(M.num) + '</b>' + esc(shortDate(M.date, true)) + '</div></div>';
+  const head = '<div class="iv-ih">' + seller + '<div class="iv-ino">' + M.title + '<b>#' + esc(M.num) + '</b>' + esc(shortDate(M.date, true)) + '</div></div>' +
+    (M.void ? '<div class="iv-void">VOID · ' + esc(M.void.why) + '</div>' : '');
   const buyer = '<div><small>Sold to</small><b>' + esc(M.buyer.name) + '</b>' + (M.buyer.store_no ? ' · Store #' + esc(M.buyer.store_no) : '') +
     M.buyer.lines.map((x) => '<div>' + esc(x) + '</div>').join('') + (M.buyer.ship_to ? '<div>Ships to: ' + esc(M.buyer.ship_to) + '</div>' : '') + '</div>';
   const lic = '<div><small>Store licenses on file</small>' + (M.buyer.lic.length ? M.buyer.lic.map((l) => '<div>' + esc(l.name) + ' ' + esc(l.number) + (l.expires ? ' · ends ' + esc(shortDate(l.expires, true)) : '') + '</div>').join('') : '<div>None on file</div>') + '</div>';
-  const terms = '<div><small>Terms</small><b>' + esc(M.terms) + '</b><div>Charged to account</div><small style="margin-top:4px">Sold by</small>' + esc(M.soldBy || '—') + '</div>';
+  const terms = '<div><small>Terms</small><b>' + esc(M.terms) + '</b><div>' + (M.kind === 'credit' ? 'Credited to account' : 'Charged to account') + '</div><small style="margin-top:4px">Sold by</small>' + esc(M.soldBy || '—') + '</div>';
   const ph = M.show.photos && M.lines.some((l) => l.photo_url), bc = M.show.barcodes;
-  const th = '<tr>' + (ph ? '<th style="width:30px"></th>' : '') + '<th>Item</th><th>Item #</th><th>UPC</th><th>Size</th><th class="iv-n">Ordered</th><th class="iv-n">Shipped</th><th class="iv-n">Price</th><th class="iv-n">Amount</th></tr>';
+  const th = '<tr>' + (ph ? '<th style="width:30px"></th>' : '') + '<th>Item</th><th>Item #</th><th>UPC</th><th>Size</th>' + (M.kind === 'credit' ? '<th class="iv-n">Came back</th><th>Why</th>' : '<th class="iv-n">Ordered</th><th class="iv-n">Shipped</th>') + '<th class="iv-n">Price</th><th class="iv-n">Amount</th></tr>';
   const cols = 8 + (ph ? 1 : 0);
   const row = (l) => '<tr>' + (ph ? '<td>' + (l.photo_url ? '<img class="iv-ph" src="' + esc(l.photo_url) + '" alt="">' : '') + '</td>' : '') +
     '<td><b>' + esc(l.name) + '</b></td><td>' + esc(l.item_no || '') + '</td><td>' + (bc ? barcodeSvg(l.upc) : '') + '<span class="iv-up">' + esc(l.upc || '') + '</span></td>' +
-    '<td>' + esc(sizeText(l)) + '</td><td class="iv-n">' + l.ordered + '</td><td class="iv-n">' + l.shipped + (l.short ? '<br><span class="iv-short">' + l.short + ' short</span>' : '') + '</td>' +
+    '<td>' + esc(l.other ? '' : sizeText(l)) + '</td>' + (M.kind === 'credit' ? '<td class="iv-n">' + (l.other ? '' : l.back) + '</td><td>' + esc(l.why) + '</td>'
+      : '<td class="iv-n">' + l.ordered + '</td><td class="iv-n">' + l.shipped + (l.short ? '<br><span class="iv-short">' + l.short + ' short</span>' : '') + '</td>') +
     '<td class="iv-n">' + (+l.off > 0 ? '<span class="iv-was">' + $(l.price) + '</span>' : '') + $(l.unit_price) + '</td><td class="iv-n"><b>' + $(l.total) + '</b></td></tr>';
   const body = M.groups.map((g) => '<tr class="iv-cat"><td colspan="' + cols + '">' + esc(g.name) + '</td></tr>' + g.lines.map(row).join('') +
     '<tr class="iv-sub"><td colspan="' + (cols - 3) + '">' + esc(g.name) + ' subtotal</td><td class="iv-n">' + g.units + '</td><td></td><td class="iv-n">' + $(g.sub) + '</td></tr>').join('');
-  const owes = M.owes ? '<table>' + (M.owes.before != null ? '<tr><td>You owed before this invoice</td><td class="iv-n">' + $(M.owes.before) + '</td></tr><tr><td>This invoice</td><td class="iv-n">' + $(M.sums.total) + '</td></tr>' +
+  const tw = M.kind === 'credit' ? 'this credit' : 'this invoice';
+  const owes = M.owes ? '<table>' + (M.owes.before != null ? '<tr><td>You owed before ' + tw + '</td><td class="iv-n">' + $(M.owes.before) + '</td></tr><tr><td>' + (M.kind === 'credit' ? 'This credit' : 'This invoice') + '</td><td class="iv-n">' + $(M.sums.total) + '</td></tr>' +
     '<tr class="iv-tot"><td>You owe now</td><td class="iv-n">' + $(M.owes.now) + '</td></tr>' : '<tr class="iv-tot"><td>You owe' + (M.owes.asOf ? ' as of ' + esc(shortDate(M.owes.asOf, true)) : '') + '</td><td class="iv-n">' + $(M.owes.now) + '</td></tr>') + '</table>' : '<div></div>';
   const sums = '<table><tr><td>Cigarettes</td><td class="iv-n">' + $(M.sums.cig) + '</td></tr><tr><td>All other</td><td class="iv-n">' + $(M.sums.other) + '</td></tr>' +
-    '<tr><td>Items shipped</td><td class="iv-n">' + M.sums.units + '</td></tr><tr class="iv-tot"><td>Invoice total</td><td class="iv-n">' + $(M.sums.total) + '</td></tr></table>';
+    '<tr><td>' + (M.kind === 'credit' ? 'Items back' : 'Items shipped') + '</td><td class="iv-n">' + M.sums.units + '</td></tr><tr class="iv-tot"><td>' + M.word + ' total</td><td class="iv-n">' + $(M.sums.total) + '</td></tr></table>';
   return '<section class="inv">' + head + '<div class="iv-pp">' + buyer + lic + terms + '</div><table><thead>' + th + '</thead><tbody>' + body + '</tbody></table>' +
     '<div class="iv-sums">' + owes + sums + '</div>' + (M.tax ? '<div class="iv-tax">' + esc(M.tax) + '</div>' : '') +
     (M.footer ? '<div class="iv-ft">' + esc(M.footer) + '</div>' : '') +
@@ -150,17 +158,19 @@ export function invoiceHtml(M) {
 // ---------- the same invoice as a PDF (for email) ----------
 export function invoicePdf(M) {
   const d = pdfDoc(612, 792), L = 36, R = 576, NAV = '#0F1B2D', MUT = '#5B6676';
-  const cols = [[L + 4, 'Item', 'left'], [272, 'Item #', 'left'], [322, 'UPC', 'left'], [400, 'Size', 'left'], [470, 'Ord', 'right'], [500, 'Ship', 'right'], [538, 'Price', 'right'], [R - 4, 'Amount', 'right']];
+  const CR = M.kind === 'credit';
+  const cols = [[L + 4, 'Item', 'left'], [272, 'Item #', 'left'], [322, 'UPC', 'left'], [400, 'Size', 'left'], [470, CR ? 'Back' : 'Ord', 'right'], [CR ? 476 : 500, CR ? 'Why' : 'Ship', CR ? 'left' : 'right'], [538, 'Price', 'right'], [R - 4, 'Amount', 'right']];
   let y = 0, pages = [];
   const header = () => {
     d.page(); pages.push(d); y = 44;
     d.text(L, y, M.seller.name, { size: 15, bold: true });
-    d.text(R, y, 'INVOICE #' + M.num, { size: 14, bold: true, align: 'right' });
+    d.text(R, y, M.title + ' #' + M.num, { size: 14, bold: true, align: 'right' });
     y += 14; let yy = y;
     M.seller.lines.concat([[M.seller.phone, M.seller.email].filter(Boolean).join(' · ')]).filter(Boolean).forEach((t) => { d.text(L, yy, t, { size: 9 }); yy += 11; });
     M.seller.lic.concat(M.seller.msa ? ['MSA ID ' + M.seller.msa] : []).forEach((t) => { d.text(L, yy, t, { size: 8, color: MUT }); yy += 10; });
     d.text(R, y, shortDate(M.date, true), { size: 10, align: 'right' });
     y = Math.max(yy, y + 12) + 4; d.line(L, y, R, y, NAV, 1.5); y += 14;
+    if (M.void) { d.text(L, y, fit('VOID · ' + M.void.why, 12, R - L, true), { size: 12, bold: true, color: '#B91C1C' }); y += 16; }
   };
   const tableHead = () => { d.rect(L, y - 9, R - L, 13, NAV); cols.forEach(([x, t, a]) => d.text(x, y, t, { size: 8, bold: true, color: '#FFFFFF', align: a })); y += 14; };
   const room = (h) => { if (y + h > 740) { header(); tableHead(); } };
@@ -170,7 +180,7 @@ export function invoicePdf(M) {
     rows.forEach((t, k) => { d.text(bx[i], yy, fit(t, 9, boxW, k === 0), { size: 9, bold: k === 0 }); yy += 11; }); return yy; };
   const b1 = box(0, 'Sold to', [M.buyer.name + (M.buyer.store_no ? ' · Store #' + M.buyer.store_no : '')].concat(M.buyer.lines, M.buyer.ship_to ? ['Ships to: ' + M.buyer.ship_to] : []));
   const b2 = box(1, 'Store licenses on file', M.buyer.lic.length ? M.buyer.lic.map((l) => l.name + ' ' + l.number) : ['None on file']);
-  const b3 = box(2, 'Terms', [M.terms, 'Charged to account', 'Sold by ' + (M.soldBy || '—')]);
+  const b3 = box(2, 'Terms', [M.terms, CR ? 'Credited to account' : 'Charged to account', 'Sold by ' + (M.soldBy || '—')]);
   y = Math.max(b1, b2, b3) + 8; tableHead();
   M.groups.forEach((g) => {
     room(30); d.rect(L, y - 9, R - L, 13, '#EEF2F7'); d.text(L + 4, y, g.name, { size: 8.5, bold: true }); y += 14;
@@ -179,9 +189,9 @@ export function invoicePdf(M) {
       d.text(cols[0][0], y, fit(l.name, 8.5, 222, true), { size: 8.5, bold: true });
       d.text(cols[1][0], y, fit(l.item_no || '', 8, 46), { size: 8 });
       d.text(cols[2][0], y, l.upc || '', { size: 8 });
-      d.text(cols[3][0], y, fit(sizeText(l), 8, 66), { size: 8 });
-      d.text(cols[4][0], y, String(l.ordered), { size: 8.5, align: 'right' });
-      d.text(cols[5][0], y, String(l.shipped), { size: 8.5, align: 'right' });
+      d.text(cols[3][0], y, fit(l.other ? '' : sizeText(l), 8, 66), { size: 8 });
+      if (CR) { d.text(cols[4][0], y, l.other ? '' : String(l.back), { size: 8.5, align: 'right' }); d.text(cols[5][0], y, fit(l.why, 7.5, 34), { size: 7.5 }); }
+      else { d.text(cols[4][0], y, String(l.ordered), { size: 8.5, align: 'right' }); d.text(cols[5][0], y, String(l.shipped), { size: 8.5, align: 'right' }); }
       d.text(cols[6][0], y, $(l.unit_price), { size: 8.5, align: 'right' });
       d.text(cols[7][0], y, $(l.total), { size: 8.5, bold: true, align: 'right' });
       let extra = 0;
@@ -189,16 +199,16 @@ export function invoicePdf(M) {
       if (l.short) { d.text(cols[5][0], y + 9, l.short + ' short', { size: 7, color: '#B4570A', align: 'right' }); extra = 9; }
       y += 4 + extra; d.line(L, y, R, y); y += 10;
     });
-    room(16); d.text(L + 4, y, g.name + ' subtotal', { size: 8.5, bold: true }); d.text(cols[5][0], y, String(g.units), { size: 8.5, bold: true, align: 'right' });
+    room(16); d.text(L + 4, y, g.name + ' subtotal', { size: 8.5, bold: true }); d.text(CR ? cols[4][0] : cols[5][0], y, String(g.units), { size: 8.5, bold: true, align: 'right' });
     d.text(cols[7][0], y, $(g.sub), { size: 8.5, bold: true, align: 'right' }); y += 16;
   });
   room(90); y += 4;
-  const sumRows = [['Cigarettes', $(M.sums.cig)], ['All other', $(M.sums.other)], ['Items shipped', String(M.sums.units)]];
+  const sumRows = [['Cigarettes', $(M.sums.cig)], ['All other', $(M.sums.other)], [CR ? 'Items back' : 'Items shipped', String(M.sums.units)]];
   let ys = y; sumRows.forEach(([a, b]) => { d.text(400, ys, a, { size: 9 }); d.text(R - 4, ys, b, { size: 9, align: 'right' }); ys += 12; });
-  d.line(400, ys - 8, R, ys - 8, NAV, 1.5); ys += 4; d.text(400, ys, 'Invoice total', { size: 12, bold: true }); d.text(R - 4, ys, $(M.sums.total), { size: 12, bold: true, align: 'right' });
+  d.line(400, ys - 8, R, ys - 8, NAV, 1.5); ys += 4; d.text(400, ys, M.word + ' total', { size: 12, bold: true }); d.text(R - 4, ys, $(M.sums.total), { size: 12, bold: true, align: 'right' });
   let yo = y;
   if (M.owes) {
-    const rows = M.owes.before != null ? [['You owed before this invoice', $(M.owes.before)], ['This invoice', $(M.sums.total)], ['You owe now', $(M.owes.now)]]
+    const rows = M.owes.before != null ? [['You owed before ' + (CR ? 'this credit' : 'this invoice'), $(M.owes.before)], [CR ? 'This credit' : 'This invoice', $(M.sums.total)], ['You owe now', $(M.owes.now)]]
       : [['You owe' + (M.owes.asOf ? ' as of ' + shortDate(M.owes.asOf, true) : ''), $(M.owes.now)]];
     rows.forEach(([a, b], i) => { const last = i === rows.length - 1; d.text(L, yo, a, { size: last ? 11 : 9, bold: last }); d.text(300, yo, b, { size: last ? 11 : 9, bold: last, align: 'right' }); yo += last ? 14 : 12; });
   }
@@ -208,7 +218,7 @@ export function invoicePdf(M) {
   if (M.sign) { room(36); y += 24; [[L, 'Received by (print name)'], [L + 190, 'Signature'], [L + 380, 'Date']].forEach(([x, t]) => { d.line(x, y, x + 170, y, NAV); d.text(x, y + 10, t, { size: 8 }); }); }
   return { bytes: d.bytes(), pages: d.count };
 }
-export const pdfName = (M) => 'Invoice-' + M.num + '-' + String(M.buyer.name || 'Store').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '') + '.pdf';
+export const pdfName = (M) => (M.kind === 'credit' ? 'Credit-memo-' : 'Invoice-') + M.num + '-' + String(M.buyer.name || 'Store').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '') + '.pdf';
 
 // ---------- EDI file (the fixed-width layout above) ----------
 // 11 digits for the B line: a UPC-A without its check digit. '' when the barcode can't be written that way.
@@ -238,7 +248,7 @@ export function ediProblems(sale, cust) {
   if (!acct) out.push({ k: 'acct', t: 'Type this store’s customer # (numbers only) on the customer’s Details.' });
   else if (acct.length > 6) out.push({ k: 'acct', t: 'The customer # can be at most 6 digits for the EDI file.' });
   if (String(sale.number || '').length > 10) out.push({ k: 'num', t: 'The invoice # is longer than 10 digits.' });
-  const nob = (sale.lines || []).filter((l) => +l.shipped > 0 && !upc11(l.single_upc || (+l.n === 1 ? l.upc : '')));
+  const nob = (sale.lines || []).filter((l) => +l.shipped !== 0 && !l.other && !upc11(l.single_upc || (+l.n === 1 ? l.upc : '')));
   if (nob.length) out.push({ k: 'pack', t: nob.length + ' line' + (nob.length > 1 ? 's have' : ' has') + ' no single-pack barcode: ' + nob.slice(0, 3).map((l) => l.name).join(', ') + (nob.length > 3 ? '…' : '') + '. The store will match ' + (nob.length > 1 ? 'them' : 'it') + ' by hand.', soft: true, names: nob.map((l) => l.name) });
   const big = (sale.lines || []).find((l) => cents(l.unit_price) > 999999 || Math.abs(+l.shipped) > 9999);
   if (big) out.push({ k: 'big', t: big.name + ': the price or quantity is too big for the EDI file.' });
@@ -260,7 +270,7 @@ export function ediFile(sale, cust) {
   return [A].concat(B).join('\r\n') + '\r\n';
 }
 export const ediName = (sale, cust) => 'LOC ' + pad(ediAcct(cust).slice(0, 6) || '0', 6) + ' ' + mmddyy(sale.invoice_date) + ' ' + sale.number + '.txt';
-export const ediSubject = (co, cust, sale) => (co.name || 'Invoices') + ' Invoices ' + (ediAcct(cust) || '') + ' · Invoice #' + sale.number;
+export const ediSubject = (co, cust, sale) => (co.name || 'Invoices') + ' Invoices ' + (ediAcct(cust) || '') + (sale.kind === 'credit' ? ' · Credit memo #' : ' · Invoice #') + sale.number;
 
 // A spreadsheet of the same lines (to download), with the pack barcode, packs in a case and the cost of one pack.
 export function ediCsv(sale) {
@@ -276,9 +286,10 @@ export function ediCsv(sale) {
 
 // The email for the invoice PDF / the EDI file (plain words, reply goes to the wholesaler).
 export function invEmailText(kind, M, co) {
-  if (kind === 'edi') return { subject: '', text: 'Invoice #' + M.num + ' from ' + co.name + ' as an EDI file for your back office.\n\n' + 'Total: ' + $(M.sums.total) + '\n\nQuestions? Reply to this email.' };
-  return { subject: co.name + ' · Invoice #' + M.num + ' · ' + $(M.sums.total),
-    text: 'Hello ' + M.buyer.name + ',\n\nYour invoice #' + M.num + ' from ' + co.name + ' is attached.\n\nInvoice total: ' + $(M.sums.total) +
-      (M.owes ? '\nYou owe now: ' + $(M.owes.now) : '') + '\nTerms: ' + M.terms + ' · charged to account\n\nQuestions? Reply to this email.\n\n' + co.name +
+  const W = M.word || 'Invoice', w = W.toLowerCase(), cr = M.kind === 'credit';
+  if (kind === 'edi') return { subject: '', text: W + ' #' + M.num + ' from ' + co.name + ' as an EDI file for your back office.\n\n' + 'Total: ' + $(M.sums.total) + '\n\nQuestions? Reply to this email.' };
+  return { subject: co.name + ' · ' + W + ' #' + M.num + ' · ' + $(M.sums.total),
+    text: 'Hello ' + M.buyer.name + ',\n\nYour ' + w + ' #' + M.num + ' from ' + co.name + ' is attached.\n\n' + W + ' total: ' + $(M.sums.total) +
+      (M.owes ? '\nYou owe now: ' + $(M.owes.now) : '') + '\nTerms: ' + M.terms + (cr ? ' · credited to your account' : ' · charged to account') + '\n\nQuestions? Reply to this email.\n\n' + co.name +
       (co.phone ? '\n' + co.phone : '') };
 }

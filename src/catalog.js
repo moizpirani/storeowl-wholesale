@@ -5,7 +5,7 @@
 
 import { stateName } from './states.js';
 import {
-  CATEGORIES, catName, TERMS, termName, LICENSES, licName, SIZE_NAMES, settingsOf, cleanUpc, upcShow, num, money, margin,
+  CATEGORIES, catName, TERMS, termName, LICENSES, licName, SIZE_NAMES, settingsOf, cleanUpc, upcShow, num, money, dollars, margin,
   licState, custIssues, licNeeded, custNeeds, licProblems, problemText, saleWarnings, custStateOf, licNeedCheck,
   suggestedLic, LIC_COVER_TEXT, SUGGEST_NOTE, photoMatch, breakLine, plural, itemIssues, mainSize, sizeLine, itemCheck, custCheck, levelsCheck, todayIso, shortDate, initials
 } from './rules.js';
@@ -22,7 +22,7 @@ export function makeCatalog(X) {
   const today = () => A.today || todayIso();
   const q = (s) => root.querySelector(s);
   const $$ = (s) => Array.from(root.querySelectorAll(s));
-  const money$ = (v) => (v == null ? '' : '$' + money(v));
+  const money$ = (v) => (v == null ? '' : dollars(v));
   const copy = (o) => JSON.parse(JSON.stringify(o));
   if (!A.it) A.it = { q: '', f: 'all', cat: '', sel: null, ed: null, orig: '', tab: 'item', err: '', more: PAGE };
   if (!A.cu) A.cu = { q: '', f: A.cuF || 'all', lvl: '', open: null, data: null, tab: 'overview', ed: null, orig: '', led: null, lorig: '', pq: '', note: '', err: '', more: PAGE };

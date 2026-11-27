@@ -2,7 +2,7 @@
 // A pretend backend (makeFake) has the same calls, for tests and pictures.
 
 import { cleanStates } from './states.js';
-import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale } from './rules.js';
+import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck } from './rules.js';
 
 export function makeDb(sb) {
   async function rpc(name, args) {
@@ -80,6 +80,8 @@ export function makeDb(sb) {
     saleSave: (id, p) => rpc('sale_save', { p_company: id, p }),
     sales: (id, status) => rpc('sales_list', { p_company: id, p_status: status }),
     saleLast: (id, cust) => rpc('sale_last', { p_company: id, p_customer: cust }),
+    creditPrices: (id, cust) => rpc('credit_prices', { p_company: id, p_customer: cust }),
+    saleVoid: (id, sale, why) => rpc('sale_void', { p_company: id, p_sale: sale, p_why: why }),
     upcScan: (id, upc, soldAs) => rpc('upc_unknown_scan', { p_company: id, p_upc: upc, p_sold_as: soldAs || null }),
     upcList: (id) => rpc('upc_unknown_list', { p_company: id }),
     upcDone: (id, upc, action, size) => rpc('upc_unknown_done', { p_company: id, p_upc: upc, p_action: action, p_size: size || null }),
@@ -151,8 +153,15 @@ export function makeFake(opts) {
     }
     return o;
   }
+  function lastPaid(cid, cust) {
+    const out = {};
+    S.sales.filter((x) => x.company_id === cid && x.customer_id === cust && x.status === 'posted' && (x.kind || 'invoice') === 'invoice')
+      .sort((a, b) => (a.posted_at > b.posted_at ? 1 : -1))
+      .forEach((x) => x.lines.forEach((l) => { if (l.size_id && +l.shipped > 0 && l.unit_price != null) out[l.size_id] = l.unit_price; }));
+    return out;
+  }
   function saleOut(x) {
-    const o = copy(x); delete o.company_id;
+    const o = copy(x); delete o.company_id; o.kind = o.kind || 'invoice';
     const c = S.customers.find((y) => y.id === x.customer_id) || {};
     o.customer = { id: c.id, name: c.name, store_no: c.store_no, city: c.city, level: c.level, terms: c.terms };
     return o;
@@ -457,7 +466,7 @@ export function makeFake(opts) {
       if (!['suspend', 'review', 'complete', 'cancel'].includes(p.action)) throw new Error('Unknown action');
       let s = p.id && S.sales.find((x) => x.id === p.id && x.company_id === cid);
       if (p.id && !s) throw new Error('Sale not found');
-      if (s && !['suspended', 'review'].includes(s.status)) throw new Error('This sale is already ' + (s.status === 'posted' ? 'an invoice' : 'cancelled'));
+      if (s && !['suspended', 'review'].includes(s.status)) throw new Error('This sale is already ' + (s.status === 'posted' ? 'an invoice' : s.status === 'void' ? 'void' : 'cancelled'));
       if (s && s.status === 'review' && m.role === 'staff') throw new Error('An owner or manager finishes sales sent for review');
       if (p.action === 'cancel') {
         if (!s) throw new Error('Nothing to cancel');
@@ -468,13 +477,22 @@ export function makeFake(opts) {
       const cu = S.customers.find((x) => x.id === (p.customer_id || (s && s.customer_id)) && x.company_id === cid);
       if (!cu) throw new Error('Pick a customer');
       if (!(p.lines || []).length) throw new Error('Scan at least one item');
-      const pr = priceSale(p.lines, S.items.filter((x) => x.company_id === cid), cu.level);
-      const gone = pr.lines.find((l) => l.missing === 'gone'); if (gone) throw new Error('An item on this sale isn’t in your list any more');
-      const np = pr.lines.find((l) => l.missing === 'price'); if (np) throw new Error(np.name + ' (' + np.size + ') has no price for this customer’s level');
-      if (p.action === 'complete' && !pr.count) throw new Error('Nothing is shipped on this sale');
+      const kind = (s && s.kind) || p.kind || 'invoice';
+      let pr;
+      if (kind === 'credit') {
+        if (p.action === 'suspend') throw new Error('A credit is finished now or sent for review');
+        if (p.action === 'complete' && m.role === 'staff') throw new Error('Send the credit for review: an owner or manager posts it');
+        pr = priceCredit(p.lines, S.items.filter((x) => x.company_id === cid), cu.level, lastPaid(cid, cu.id));
+        const bad = creditCheck(pr); if (bad) throw new Error(bad);
+      } else {
+        pr = priceSale(p.lines, S.items.filter((x) => x.company_id === cid), cu.level);
+        const gone = pr.lines.find((l) => l.missing === 'gone'); if (gone) throw new Error('An item on this sale isn’t in your list any more');
+        const np = pr.lines.find((l) => l.missing === 'price'); if (np) throw new Error(np.name + ' (' + np.size + ') has no price for this customer’s level');
+        if (p.action === 'complete' && !pr.count) throw new Error('Nothing is shipped on this sale');
+      }
       if (p.action === 'review' && !String(p.why || '').trim()) throw new Error('Say what the manager should check');
       const now = new Date().toISOString();
-      if (!s) { s = { id: id(), company_id: cid, number: null, status: 'suspended', why: '', lic_reason: '', by_name: who, created_at: now, sent_at: null, posted_at: null, posted_by: '', invoice_date: null }; S.sales.push(s); }
+      if (!s) { s = { id: id(), company_id: cid, kind, number: null, status: 'suspended', why: '', lic_reason: '', by_name: who, void_at: null, void_by: '', void_why: '', created_at: now, sent_at: null, posted_at: null, posted_by: '', invoice_date: null }; S.sales.push(s); }
       Object.assign(s, { customer_id: cu.id, lines: pr.lines.map((l) => { const o = Object.assign({}, l); delete o.sizes; delete o.photo_url; delete o.missing; delete o.group; return o; }),
         total: pr.total, units: pr.count, updated_at: now });
       if (String(p.lic_reason || '').trim()) s.lic_reason = p.lic_reason.trim().slice(0, 200);
@@ -485,7 +503,7 @@ export function makeFake(opts) {
         co.next_invoice = co.next_invoice || 1001;
         s.invoice_date = s.status === 'review' ? (s.sent_at || now).slice(0, 10) : now.slice(0, 10);
         s.number = co.next_invoice++; s.status = 'posted'; s.posted_at = now; s.posted_by = who;
-        log(cid, 'invoice posted', { sale: s.id, number: s.number, customer: cu.id, total: s.total, license_reason: s.lic_reason || null });
+        log(cid, kind === 'credit' ? 'credit memo posted' : 'invoice posted', { sale: s.id, number: s.number, customer: cu.id, total: s.total, license_reason: s.lic_reason || null });
       }
       return saleOut(s);
     },
@@ -493,19 +511,19 @@ export function makeFake(opts) {
       const m = need(cid, 'staff');
       if (!['suspended', 'review', 'posted'].includes(status)) throw new Error('Unknown list');
       if (status === 'review' && m.role === 'staff') throw new Error('Only owners and managers see sales sent for review');
-      return S.sales.filter((x) => x.company_id === cid && x.status === status).sort((a, b) => (b.created_at > a.created_at ? 1 : -1)).map(saleOut);
+      return S.sales.filter((x) => x.company_id === cid && (x.status === status || (status === 'posted' && x.status === 'void'))).sort((a, b) => (b.created_at > a.created_at ? 1 : -1)).map(saleOut);
     },
     async invoiceData(cid, sale) {
       need(cid, 'staff');
       const x = S.sales.find((y) => y.id === sale && y.company_id === cid);
       if (!x) throw new Error('Invoice not found');
-      if (x.status !== 'posted') throw new Error('Only a completed sale is an invoice');
+      if (!['posted', 'void'].includes(x.status)) throw new Error('Only a completed sale is an invoice');
       const c = S.customers.find((y) => y.id === x.customer_id);
       return { sale: saleOut(x), customer: custOut(c), company: cj(S.companies.find((y) => y.id === cid)) };
     },
     async saleSent(cid, sale, p) {
       const m = need(cid, 'staff');
-      const x = S.sales.find((y) => y.id === sale && y.company_id === cid && y.status === 'posted');
+      const x = S.sales.find((y) => y.id === sale && y.company_id === cid && ['posted', 'void'].includes(y.status));
       if (!x) throw new Error('Invoice not found');
       x.sends = (x.sends || []).concat([{ kind: p.kind, to: p.to || '', ok: p.ok !== false, err: p.err || '', by: m.name || me.email, at: new Date().toISOString() }]).slice(-50);
       if (p.kind === 'email' || p.kind === 'edi') log(cid, p.ok === false ? 'invoice email failed' : 'invoice emailed', { sale, kind: p.kind, to: p.to });
@@ -521,8 +539,24 @@ export function makeFake(opts) {
     },
     async saleLast(cid, cust) {
       need(cid, 'staff');
-      const l = S.sales.filter((x) => x.company_id === cid && x.customer_id === cust && x.status === 'posted').sort((a, b) => (b.posted_at > a.posted_at ? 1 : -1))[0];
+      const l = S.sales.filter((x) => x.company_id === cid && x.customer_id === cust && x.status === 'posted' && (x.kind || 'invoice') === 'invoice').sort((a, b) => (b.posted_at > a.posted_at ? 1 : -1))[0];
       return l ? saleOut(l) : null;
+    },
+    async creditPrices(cid, cust) {
+      need(cid, 'staff');
+      if (!S.customers.some((x) => x.id === cust && x.company_id === cid)) throw new Error('Customer not found');
+      return lastPaid(cid, cust);
+    },
+    async saleVoid(cid, sale, why) {
+      const m = need(cid, 'manager');
+      const x = S.sales.find((y) => y.id === sale && y.company_id === cid);
+      if (!x) throw new Error('Invoice not found');
+      if (x.status === 'void') throw new Error('This is already void');
+      if (x.status !== 'posted') throw new Error('Only a posted invoice or credit can be voided');
+      if (!String(why || '').trim()) throw new Error('Say why it’s void');
+      Object.assign(x, { status: 'void', void_at: new Date().toISOString(), void_by: m.name || me.email, void_why: why.trim().slice(0, 300) });
+      log(cid, x.kind === 'credit' ? 'credit memo voided' : 'invoice voided', { sale: x.id, number: x.number, customer: x.customer_id, total: x.total, why: x.void_why });
+      return saleOut(x);
     },
     async upcScan(cid, upc, soldAs) {
       const m = need(cid, 'staff');

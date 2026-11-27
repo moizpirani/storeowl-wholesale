@@ -7,8 +7,8 @@
 // customer's Licenses tab, and each sale to a store with a missing / ended license is written in its History by itself.
 
 import {
-  catName, termName, money, settingsOf, saleWarnings, problemText, priceSale, saleCheck, findUpc, cleanUpc, upcShow,
-  plural, todayIso, shortDate, initials, mainSize
+  catName, termName, money, dollars, settingsOf, saleWarnings, problemText, priceSale, saleCheck, findUpc, cleanUpc, upcShow,
+  plural, todayIso, shortDate, initials, mainSize, priceCredit, creditCheck, CREDIT_WHY, creditWhy
 } from './rules.js';
 
 import { makeInvUi } from './invui.js';
@@ -17,14 +17,14 @@ const WHY = ['Price check', 'Item not in StoreOwl', 'Short on stock', 'License',
 
 export function makeCounter(X) {
   const { A, db, root, esc, opt } = X;
-  const iv = makeInvUi(Object.assign({}, X, { money: (v) => '$' + money(v), when: X.when || ((t) => String(t || '')) }));
+  const iv = makeInvUi(Object.assign({}, X, { money: (v) => dollars(v), when: X.when || ((t) => String(t || '')) }));
   const q = (s) => root.querySelector(s);
   const $$ = (s) => Array.from(root.querySelectorAll(s));
-  const $ = (v) => (v == null ? '—' : '$' + money(v));
+  const $ = (v) => (v == null ? '—' : dollars(v));
   const co = () => X.co() || {};
   const sets = () => settingsOf(co());
   const today = () => todayIso();
-  const fresh = () => ({ step: 'home', q: '', hi: 0, sale: null, susp: null, last: null, panel: null, why: [], note: '', lic: '', clear: 0, unk: null, nq: '', nhi: 0, done: null, busy: false });
+  const fresh = () => ({ step: 'home', q: '', hi: 0, sale: null, susp: null, last: null, panel: null, why: [], note: '', lic: '', clear: 0, unk: null, nq: '', nhi: 0, done: null, busy: false, mode: 'sale', paid: null });
   const C = () => A.ct || (A.ct = fresh());
 
   // ---------- data ----------
@@ -45,7 +45,12 @@ export function makeCounter(X) {
   }
   const pastDue = (s) => s.created_at && todayIso(new Date(s.created_at)) < today();
   const cust = () => (A.custs || []).find((c) => c.id === (C().sale || {}).customer_id) || null;
-  const priced = () => { const s = C().sale, c = cust(); return priceSale(s ? s.lines : [], A.items || [], c ? c.level : 1); };
+  const isCredit = () => !!(C().sale && C().sale.kind === 'credit');
+  const priced = () => {
+    const s = C().sale, c = cust();
+    if (s && s.kind === 'credit') return priceCredit(s.lines, A.items || [], c ? c.level : 1, C().paid || {});
+    return priceSale(s ? s.lines : [], A.items || [], c ? c.level : 1);
+  };
   const dirty = () => { const s = C().sale; return !!(s && s.lines.length && JSON.stringify(s.lines) !== s.orig); };
 
   // License problems for what's on this sale ('' when the owner turned the Counter warning off).
@@ -69,6 +74,7 @@ export function makeCounter(X) {
       '<button class="ctnew" id="ct-new" data-guide="counter-home-new-sale"><span class="ctplus">+</span><span><b>New sale</b><span>Find the customer, then scan items</span></span></button>' +
       '<div class="cttiles">' +
       tile('ct-resume', '❚❚', 'Resume a suspended sale', n ? 'Finish them by closing' : 'None right now', '<span class="ctcount' + (n ? '' : ' zero') + '">' + (C().susp ? n : '…') + '</span>', 'counter-home-resume') +
+      tile('ct-credit', '↩', 'Return or credit', 'Items coming back, or money off', '<span class="ctarrow">›</span>', 'counter-home-credit') +
       tile('ct-invoices', '▤', 'Find an invoice', 'By invoice #, customer or date', '<span class="ctarrow">›</span>', 'counter-home-invoices') +
       '</div>';
   }
@@ -90,7 +96,7 @@ export function makeCounter(X) {
       esc([c.store_no ? 'Store #' + c.store_no : '', c.city].filter(Boolean).join(' · ')) + '</span></button>').join('');
   }
   function findHtml() {
-    return '<div class="hdr"><h1>New sale</h1><button class="btn" id="ct-back" data-guide="counter-find-back">Back</button></div>' +
+    return '<div class="hdr"><h1>' + (C().mode === 'credit' ? 'Return or credit' : 'New sale') + '</h1><button class="btn" id="ct-back" data-guide="counter-find-back">Back</button></div>' +
       '<div class="card ctfind"><input class="ctbig" id="ct-cq" placeholder="Customer name, store # or phone" value="' + esc(C().q) + '" autocomplete="off" data-guide="counter-find-search">' +
       '<div id="ct-cres">' + custRowsHtml() + '</div></div>';
   }
@@ -138,6 +144,7 @@ export function makeCounter(X) {
     return '<span class="cthid"><span>' + label + '</span><b id="ct-v-' + k + '">•••</b><button class="lnk" data-ctshow="' + k + '" data-guide="counter-sale-show-' + k + '">Show</button></span>';
   }
   function saleHtml() {
+    if (isCredit()) return creditHtml();
     const S = C(), s = S.sale, c = cust();
     if (!c) return '<h1>Counter</h1><div class="card"><p class="sm">This customer isn’t in your list any more.</p><button class="btn" id="ct-change" data-guide="counter-sale-change">Pick a customer</button></div>';
     const pl = priced(), warn = licWarn(), mgr = X.isMgr();
@@ -167,6 +174,55 @@ export function makeCounter(X) {
       '<button class="lnk ctclear" id="ct-clear" data-guide="counter-sale-clear">' + (S.clear ? 'Tap again to ' + (isNew ? 'clear this sale' : 'cancel this sale') : isNew ? 'Clear sale' : 'Cancel sale') + '</button></aside>';
     return '<h1>Counter</h1><div class="ctwrap"><div class="ctmain">' + head + rv + held + lic + unk + scan + '<div id="ct-lines">' + linesHtml(pl) + '</div></div>' + side + '</div>' + panelHtml(pl, warn);
   }
+  // ---------- a return / credit memo ----------
+  function creditRow(l, i) {
+    const why = '<select class="sel ctwy' + (l.reason ? '' : ' need') + '" data-ctwy="' + i + '" data-guide="counter-credit-why">' + '<option value="">Why?</option>' +
+      CREDIT_WHY.map(([k, n]) => '<option value="' + k + '"' + (k === l.reason ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</select>';
+    if (l.other) {
+      return '<tr data-row="' + i + '"><td class="ctphc"><span class="ctph none">$</span></td><td colspan="2"><input class="inp ctod" data-ctod="' + i + '" placeholder="What is the credit for? (e.g. short on last delivery)" value="' + esc(l.desc || '') + '" data-guide="counter-credit-other-what"></td>' +
+        '<td class="n">—</td><td>' + why + '</td><td class="n"><input class="ctq ctoa" inputmode="decimal" data-ctoa="' + i + '" placeholder="0.00" value="' + esc(l.price == null ? '' : money(l.price)) + '" data-guide="counter-credit-other-amount"></td>' +
+        '<td class="n"><b class="ctcr" id="ct-tt-' + i + '">' + (l.total == null ? '—' : $(l.total)) + '</b></td>' +
+        '<td><button class="x" data-ctrm="' + i + '" aria-label="Take off" data-guide="counter-sale-remove">×</button></td></tr>';
+    }
+    const sz = (l.sizes || []).length > 1
+      ? '<span class="ctsz">' + l.sizes.map((z) => '<button class="' + (z.id === l.size_id ? 'on' : '') + '" data-ctsz="' + i + '|' + z.id + '" data-guide="counter-sale-size">' + esc(z.name) + '</button>').join('') + '</span>'
+      : '<span class="ctsz one"><button class="on" disabled data-guide="counter-sale-size">' + esc(l.size || '') + '</button></span>';
+    const ph = l.photo_url ? '<img class="ctph" src="' + esc(l.photo_url) + '" alt="">' : '<span class="ctph none"></span>';
+    const from = l.missing === 'price' ? ['or', 'No price to credit'] : l.missing === 'gone' ? ['or', 'Not in your items any more · take it off'] : l.from === 'paid' ? ['', 'What they last paid'] : ['', 'Their price today'];
+    return '<tr data-row="' + i + '"><td class="ctphc">' + ph + '</td><td><b>' + esc(l.name || '') + '</b><small>' + esc(l.upc ? upcShow(l.upc) : '') + '</small></td><td>' + sz + '</td>' +
+      '<td class="n"><input class="ctq" inputmode="numeric" data-ctcq="' + i + '" value="' + (l.qty || 0) + '" data-guide="counter-credit-qty"></td><td>' + why + '</td>' +
+      '<td class="n" id="ct-pr-' + i + '">' + $(l.unit_price) + '<small class="ctnote ' + from[0] + '">' + from[1] + '</small></td><td class="n"><b class="ctcr" id="ct-tt-' + i + '">' + $(l.total) + '</b></td>' +
+      '<td><button class="x" data-ctrm="' + i + '" aria-label="Take off" data-guide="counter-sale-remove">×</button></td></tr>';
+  }
+  function creditLinesHtml(pl) {
+    if (!pl.lines.length) return '<div class="card ctempty">Scan what’s coming back, or add a credit without an item.</div>';
+    return '<div class="tcard"><table class="t ctlt ctcrt"><thead><tr><th></th><th>Item</th><th>Size</th><th class="n">Came back</th><th>Why</th><th class="n">Price</th><th class="n">Credit</th><th></th></tr></thead><tbody>' +
+      pl.lines.map(creditRow).join('') + '</tbody></table></div>';
+  }
+  function creditHtml() {
+    const S = C(), s = S.sale, c = cust(), mgr = X.isMgr();
+    if (!c) return '<h1>Return or credit</h1><div class="card"><p class="sm">This customer isn’t in your list any more.</p><button class="btn" id="ct-change" data-guide="counter-sale-change">Pick a customer</button></div>';
+    const pl = priced();
+    const head = '<div class="card ctcust"><div class="av">' + esc(initials(c.name)) + '</div><div class="ctwho"><b>' + esc(c.name) + '</b><span>' +
+      esc([c.store_no ? 'Store #' + c.store_no : '', c.city, termName(c.terms)].filter(Boolean).join(' · ')) + '</span></div>' +
+      '<span class="tag crtag big">Return / credit</span>' + hidden('owes', 'Owes') +
+      (s.status === 'review' ? '' : '<button class="btn sm" id="ct-change" data-guide="counter-sale-change">Change</button>') + '</div>';
+    const rv = s.status === 'review' ? '<div class="ctbar rv"><b>Sent for review</b> by ' + esc(s.by_name || '—') + ' · ' + esc(s.why || '') + '</div>' : '';
+    const unk = S.unk ? '<div class="ctunk"><div class="tx"><b>No item has barcode ' + esc(upcShow(S.unk)) + '.</b> Type the item’s name instead.</div>' +
+      '<button class="btn sm" id="ct-unk-x" data-guide="counter-sale-unknown-ok">OK</button></div>' : '';
+    const scan = '<div class="ctscan"><input class="ctbig" id="ct-scan" placeholder="Scan what’s coming back, or type the item name" autocomplete="off" value="' + esc(S.nq) + '" data-guide="counter-sale-scan">' +
+      '<button class="btn" id="ct-other" data-guide="counter-credit-add-other">+ Credit without an item</button></div>' +
+      '<div id="ct-sres" class="ctsres">' + nameRowsHtml() + '</div>';
+    const isNew = !s.id, canPost = mgr;
+    const side = '<aside class="card ctsum"><h2>Credit memo</h2><div class="ctkv"><span id="ct-count">' + pl.count + ' ' + plural('item', pl.count) + ' back · ' + pl.lines.length + ' ' + plural('line', pl.lines.length) + '</span></div>' +
+      '<div class="ctkv tot"><b>Credit total</b><b class="ctcr" id="ct-total">' + $(pl.total) + '</b></div>' +
+      '<div class="ctkv"><span>Goes to</span><span>Their account</span></div>' +
+      (canPost ? (s.status === 'review' ? '' : '<div class="ctbtns one"><button class="btn" id="ct-review" data-guide="counter-sale-send-review">Send for review</button></div>') +
+        '<button class="btn amber ctgo" id="ct-complete" data-guide="counter-credit-complete">Complete credit</button>'
+        : '<p class="sm">An owner or manager posts credits. Send it to them.</p><button class="btn amber ctgo" id="ct-review" data-guide="counter-sale-send-review">Send for review</button>') +
+      '<button class="lnk ctclear" id="ct-clear" data-guide="counter-sale-clear">' + (S.clear ? 'Tap again to ' + (isNew ? 'clear this credit' : 'cancel this credit') : isNew ? 'Clear' : 'Cancel credit') + '</button></aside>';
+    return '<h1>Return or credit</h1><div class="ctwrap"><div class="ctmain">' + head + rv + unk + scan + '<div id="ct-lines">' + creditLinesHtml(pl) + '</div></div>' + side + '</div>' + panelHtml(pl, []);
+  }
   function when(iso) { const d = new Date(iso); return isNaN(d) ? '' : (todayIso(d) === today() ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ') + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); }
 
   // Item name search under the scan box (whole page never redraws while typing).
@@ -193,6 +249,12 @@ export function makeCounter(X) {
 
   function panelHtml(pl, warn) {
     const S = C();
+    if (S.panel === 'complete' && isCredit()) {
+      return '<div class="ctmodal"><div class="card ctpan"><h2>Complete credit</h2><div class="ctkv tot"><b>Credit total</b><b class="ctcr">' + $(pl.total) + '</b></div>' +
+        '<p class="sm">It comes off what ' + esc((cust() || {}).name || 'the store') + ' owes. It gets its own number, and prints and emails like an invoice.</p>' +
+        '<p class="fmsg" id="ct-perr"></p><div class="rowr"><button class="btn" id="ct-pback" data-guide="counter-complete-back">Back</button>' +
+        '<button class="btn amber" id="ct-post" data-guide="counter-credit-post"' + (S.busy ? ' disabled' : '') + '>Post credit</button></div></div></div>';
+    }
     if (S.panel === 'complete') {
       return '<div class="ctmodal"><div class="card ctpan"><h2>Complete sale</h2><div class="ctkv tot"><b>Invoice total</b><b>' + $(pl.total) + '</b></div>' +
         '<div class="seg"><button class="on" data-guide="counter-complete-charge">Charge to account</button></div>' +
@@ -200,7 +262,7 @@ export function makeCounter(X) {
         '<button class="btn amber" id="ct-post" data-guide="counter-complete-post"' + (S.busy ? ' disabled' : '') + '>Post invoice</button></div></div></div>';
     }
     if (S.panel === 'review') {
-      return '<div class="ctmodal"><div class="card ctpan"><h2>Send for review</h2><p class="sm gap">An owner or manager opens it on the Review page and finishes it. The invoice keeps today’s date.</p>' +
+      return '<div class="ctmodal"><div class="card ctpan"><h2>Send for review</h2><p class="sm gap">An owner or manager opens it on the Review page and finishes it. ' + (isCredit() ? 'The credit keeps today’s date.' : 'The invoice keeps today’s date.') + '</p>' +
         '<div class="chips">' + WHY.map((w) => '<button class="chip' + (S.why.includes(w) ? ' on' : '') + '" data-ctwhy="' + esc(w) + '" data-guide="counter-review-reason">' + esc(w) + '</button>').join('') + '</div>' +
         '<label class="fld"><span>Note for the manager</span><input id="ct-rnote" value="' + esc(S.note) + '" data-guide="counter-review-note"></label>' +
         '<p class="fmsg" id="ct-perr"></p><div class="rowr"><button class="btn" id="ct-pback" data-guide="counter-review-back">Back</button>' +
@@ -234,8 +296,9 @@ export function makeCounter(X) {
   function startSale(c) {
     const S = C();
     if (S.sale && S.sale.lines.length) { S.sale.customer_id = c.id; }
-    else S.sale = { id: null, status: 'new', customer_id: c.id, lines: [], orig: '[]' };
+    else S.sale = { id: null, status: 'new', kind: S.mode === 'credit' ? 'credit' : 'invoice', customer_id: c.id, lines: [], orig: '[]' };
     S.step = 'sale'; S.q = ''; S.last = null; S.lic = ''; S.unk = null; S.nq = ''; S.clear = 0;
+    if (S.sale.kind === 'credit') { loadPaid(c.id); X.render(); focusScan(); return; }
     db.saleLast(A.cid, c.id).then((l) => {
       if (!(S.sale && S.sale.customer_id === c.id && l && l.lines.length)) return;
       S.last = l;
@@ -245,10 +308,18 @@ export function makeCounter(X) {
     loadSusp(true);
     X.render(); focusScan();
   }
+  function loadPaid(custId) {
+    const S = C(); S.paid = {};
+    db.creditPrices(A.cid, custId).then((m) => { if (C().sale && C().sale.customer_id === custId) { C().paid = m || {}; if (A.view === 'counter') { updNums(); } } }).catch(() => { /* their price today */ });
+  }
   function openSale(s) {
     const S = C();
-    S.sale = { id: s.id, status: s.status, customer_id: s.customer_id, lines: s.lines.map((l) => ({ size_id: l.size_id, ordered: +l.ordered, shipped: +l.shipped, se: +l.shipped !== +l.ordered })),
+    const cr = s.kind === 'credit';
+    S.sale = { id: s.id, status: s.status, kind: s.kind || 'invoice', customer_id: s.customer_id,
+      lines: s.lines.map((l) => cr ? (l.other ? { other: true, desc: l.name, amount: l.unit_price, reason: l.reason } : { size_id: l.size_id, qty: Math.abs(+l.shipped), reason: l.reason })
+        : { size_id: l.size_id, ordered: +l.ordered, shipped: +l.shipped, se: +l.shipped !== +l.ordered }),
       sent_at: s.sent_at, why: s.why, by_name: s.by_name };
+    if (cr) { S.paid = {}; s.lines.forEach((l) => { if (l.size_id && l.from === 'paid') S.paid[l.size_id] = l.unit_price; }); }
     S.sale.orig = JSON.stringify(S.sale.lines);
     S.step = 'sale'; S.lic = s.lic_reason || ''; S.unk = null; S.nq = ''; S.clear = 0; S.last = null; S.panel = null;
     A.view = 'counter'; X.render(); focusScan();
@@ -261,7 +332,9 @@ export function makeCounter(X) {
   function addSize(sizeId, fromName) {
     const S = C(), s = S.sale;
     let i = s.lines.findIndex((l) => l.size_id === sizeId);
-    if (i >= 0) { s.lines[i].ordered++; if (!s.lines[i].se) s.lines[i].shipped = s.lines[i].ordered; }
+    if (s.kind === 'credit') {
+      if (i >= 0) s.lines[i].qty++; else { s.lines.push({ size_id: sizeId, qty: 1, reason: '' }); i = s.lines.length - 1; }
+    } else if (i >= 0) { s.lines[i].ordered++; if (!s.lines[i].se) s.lines[i].shipped = s.lines[i].ordered; }
     else { s.lines.push({ size_id: sizeId, ordered: 1, shipped: 1, se: false }); i = s.lines.length - 1; }
     if (fromName && S.unk) {
       const z = findSize(sizeId);
@@ -270,7 +343,7 @@ export function makeCounter(X) {
     }
     S.just = sizeId; S.nq = ''; S.nhi = 0; S.clear = 0;
     X.render();
-    const box = q('[data-cto="' + i + '"]'); if (box) { box.focus(); box.select(); }
+    const box = q('[data-cto="' + i + '"]') || q('[data-ctcq="' + i + '"]'); if (box) { box.focus(); box.select(); }
   }
   function doRepeat() {
     const S = C(), s = S.sale;
@@ -292,7 +365,7 @@ export function makeCounter(X) {
       const f = findUpc(A.items, code);
       if (f) { S.unk = null; return addSize(f.z.id); }
       S.unk = code; S.nq = '';
-      db.upcScan(A.cid, code).catch(() => { /* still sells */ });
+      if (!isCredit()) db.upcScan(A.cid, code).catch(() => { /* still sells */ });
       X.render(); focusScan();
     }
   }
@@ -302,19 +375,22 @@ export function makeCounter(X) {
       const p = q('#ct-pr-' + i), t = q('#ct-tt-' + i), n = q('#ct-nt-' + i), sh = q('[data-cts="' + i + '"]');
       if (p) p.textContent = $(l.unit_price);
       if (t) t.textContent = $(l.total);
-      if (n) { const nt = noteOf(l); n.textContent = nt[1]; n.className = 'ctnote ' + nt[0]; }
+      if (n && !l.qty) { const nt = noteOf(l); n.textContent = nt[1]; n.className = 'ctnote ' + nt[0]; }
       if (sh) { if (document.activeElement !== sh) sh.value = l.shipped; sh.classList.toggle('short', l.shipped < l.ordered); }
     });
     groups(pl).forEach((g) => { const e = q('#ct-g-' + g.k); if (e) e.textContent = groupLabel(pl, g); });
     const tt = q('#ct-total'); if (tt) tt.textContent = $(pl.total);
-    const ct = q('#ct-count'); if (ct) ct.textContent = pl.count + ' ' + plural('item', pl.count) + ' · ' + pl.lines.length + ' ' + plural('line', pl.lines.length);
+    const ct = q('#ct-count'); if (ct) ct.textContent = pl.count + ' ' + plural('item', pl.count) + (isCredit() ? ' back' : '') + ' · ' + pl.lines.length + ' ' + plural('line', pl.lines.length);
+    if (isCredit()) pl.lines.forEach((l, i) => { const pr = q('#ct-pr-' + i); if (pr && !l.other) pr.innerHTML = $(l.unit_price) + '<small class="ctnote">' + (l.from === 'paid' ? 'What they last paid' : 'Their price today') + '</small>'; const t = q('#ct-tt-' + i); if (t) t.textContent = l.total == null ? '—' : $(l.total); });
   }
-  const wire = (s) => s.lines.map((l) => ({ size_id: l.size_id, ordered: l.ordered, shipped: l.shipped }));
+  const wire = (s) => s.kind === 'credit'
+    ? s.lines.map((l) => (l.other ? { other: true, desc: l.desc || '', amount: l.amount, reason: l.reason || '' } : { size_id: l.size_id, qty: l.qty, reason: l.reason || '' }))
+    : s.lines.map((l) => ({ size_id: l.size_id, ordered: l.ordered, shipped: l.shipped }));
   async function save(action, extra) {
     const S = C(), s = S.sale;
     S.busy = true;
     try {
-      const r = await db.saleSave(A.cid, Object.assign({ id: s.id || undefined, customer_id: s.customer_id, lines: wire(s), action }, extra || {}));
+      const r = await db.saleSave(A.cid, Object.assign({ id: s.id || undefined, kind: s.kind, customer_id: s.customer_id, lines: wire(s), action }, extra || {}));
       S.busy = false;
       return r;
     } catch (e) {
@@ -330,7 +406,8 @@ export function makeCounter(X) {
     loadReviewCount();
     const S = C();
     const g = (id, fn) => { const e = q(id); if (e) e.onclick = fn; };
-    g('#ct-new', () => { S.step = 'find'; S.q = ''; S.hi = 0; S.sale = null; X.render(); setTimeout(() => { const b = q('#ct-cq'); if (b) b.focus(); }, 0); });
+    g('#ct-credit', () => { S.mode = 'credit'; S.step = 'find'; S.q = ''; S.hi = 0; S.sale = null; X.render(); setTimeout(() => { const b = q('#ct-cq'); if (b) b.focus(); }, 0); });
+    g('#ct-new', () => { S.mode = 'sale'; S.step = 'find'; S.q = ''; S.hi = 0; S.sale = null; X.render(); setTimeout(() => { const b = q('#ct-cq'); if (b) b.focus(); }, 0); });
     g('#ct-resume', () => { S.step = 'resume'; loadSusp(true); X.render(); });
     g('#ct-invoices', () => { A.view = 'invoices'; X.render(); });
     g('#ct-back', () => { S.step = S.sale && S.sale.lines.length ? 'sale' : 'home'; X.render(); });
@@ -389,13 +466,21 @@ export function makeCounter(X) {
       b.oninput = () => { const l = s.lines[+b.dataset.cts]; l.shipped = qty(b.value); l.se = l.shipped !== l.ordered; updNums(); };
       b.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); focusScan(); } };
     });
+    $$('[data-ctcq]').forEach((b) => {
+      b.oninput = () => { s.lines[+b.dataset.ctcq].qty = qty(b.value); S.just = null; updNums(); };
+      b.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const w = q('[data-ctwy="' + b.dataset.ctcq + '"]'); if (w && !w.value) w.focus(); else focusScan(); } };
+    });
+    $$('[data-ctwy]').forEach((b) => { b.onchange = () => { s.lines[+b.dataset.ctwy].reason = b.value; b.classList.toggle('need', !b.value); }; });
+    $$('[data-ctod]').forEach((b) => { b.oninput = () => { s.lines[+b.dataset.ctod].desc = b.value; }; });
+    $$('[data-ctoa]').forEach((b) => { b.oninput = () => { s.lines[+b.dataset.ctoa].amount = b.value; updNums(); }; });
+    g('#ct-other', () => { s.lines.push({ other: true, desc: '', amount: '', reason: '' }); X.render(); const b = q('[data-ctod="' + (s.lines.length - 1) + '"]'); if (b) b.focus(); });
     $$('[data-ctsz]').forEach((b) => { b.onclick = () => { const [i, z] = b.dataset.ctsz.split('|'); s.lines[+i].size_id = z; X.render(); }; });
     $$('[data-ctrm]').forEach((b) => { b.onclick = () => { s.lines.splice(+b.dataset.ctrm, 1); X.render(); focusScan(); }; });
     g('#ct-lic', () => { const c0 = cust(); if (c0) X.openCust(c0.id, 'licenses'); });
     g('#ct-clear', async () => {
       if (!S.clear) { S.clear = 1; X.render(); setTimeout(() => { if (C().clear) { C().clear = 0; if (A.view === 'counter') X.render(); } }, 4000); return; }
-      if (!s.id) return reset('Sale cleared');
-      const r = await save('cancel'); if (r) reset('Sale cancelled');
+      if (!s.id) return reset(isCredit() ? 'Credit cleared' : 'Sale cleared');
+      const r = await save('cancel'); if (r) reset(isCredit() ? 'Credit cancelled' : 'Sale cancelled');
     });
     g('#ct-suspend', async () => {
       if (!s.lines.length) { X.say('Scan at least one item first', true); return X.render(); }
@@ -403,10 +488,11 @@ export function makeCounter(X) {
     });
     g('#ct-review', () => {
       if (!s.lines.length) { X.say('Scan at least one item first', true); return X.render(); }
+      if (isCredit()) { const bad = creditCheck(priced()); if (bad) { X.say(bad, true); return X.render(); } }
       S.panel = 'review'; S.why = []; S.note = ''; X.render();
     });
     g('#ct-complete', () => {
-      const bad = saleCheck(priced()); if (bad) { X.say(bad, true); return X.render(); }
+      const bad = isCredit() ? creditCheck(priced()) : saleCheck(priced()); if (bad) { X.say(bad, true); return X.render(); }
       S.panel = 'complete'; X.render(); setTimeout(() => { const b = q('#ct-post'); if (b) b.focus(); }, 0);
     });
     g('#ct-pback', () => { S.panel = null; X.render(); });
@@ -415,11 +501,11 @@ export function makeCounter(X) {
     g('#ct-rsend', async () => {
       const why = S.why.concat(S.note.trim() ? [S.note.trim()] : []).join(' · ');
       if (!why) { q('#ct-perr').textContent = 'Pick what the manager should check, or type a note.'; return; }
-      const r = await save('review', { why, lic_reason: licAuto(licWarn()) }); if (r) reset('Sent for review · ' + r.customer.name);
+      const r = await save('review', { why, lic_reason: isCredit() ? '' : licAuto(licWarn()) }); if (r) reset((isCredit() ? 'Credit sent for review · ' : 'Sent for review · ') + r.customer.name);
     });
     g('#ct-post', async () => {
       q('#ct-post').disabled = true;
-      const r = await save('complete', { lic_reason: licAuto(licWarn()) });
+      const r = await save('complete', { lic_reason: isCredit() ? '' : licAuto(licWarn()) });
       if (!r) { const b = q('#ct-post'); if (b) b.disabled = false; return; }
       const susp = S.susp; A.ct = fresh(); A.ct.susp = susp; A.ct.step = 'done'; A.ct.done = { sale: r }; X.say('');
       A.rvn = null; A.ivs = null; A.stoday = null; loadSusp(true); X.load(true); X.render();
@@ -433,7 +519,7 @@ export function makeCounter(X) {
     if (!R) return '<h1>Review</h1><div class="card"><p class="sm">Loading…</p></div>';
     const row = (s, kind) => '<tr data-rvopen="' + s.id + '" class="ctpick" data-guide="review-list-row"><td><b>' + esc(s.customer.name) + '</b><small>' + esc(s.customer.store_no ? 'Store #' + s.customer.store_no : '') + '</small></td>' +
       '<td>' + esc(s.by_name || '—') + '<small>' + esc(when(kind === 'review' ? s.sent_at : s.created_at)) + '</small></td>' +
-      '<td>' + (kind === 'review' ? esc(s.why) : '<span class="tag need">Suspended and not finished</span>') + '</td><td class="n">' + s.units + '</td><td class="n">' + $(s.total) + '</td></tr>';
+      '<td>' + (s.kind === 'credit' ? '<span class="tag crtag">Credit</span> ' : '') + (kind === 'review' ? esc(s.why) : '<span class="tag need">Suspended and not finished</span>') + '</td><td class="n">' + s.units + '</td><td class="n">' + $(s.total) + '</td></tr>';
     const all = R.review.map((s) => row(s, 'review')).concat(R.old.map((s) => row(s, 'old')));
     return '<div class="hdr"><h1>Review<span class="count">' + all.length + '</span></h1></div>' +
       '<p class="sm gap">Sales sent to you from the Counter, and suspended sales from an earlier day. Open one to fix it and complete it.</p>' +
@@ -463,18 +549,27 @@ export function makeCounter(X) {
     const I = A.ivs, t = I.q.trim().toLowerCase();
     const l = I.list.filter((s) => !t || String(s.number) === t.replace(/^#/, '') || s.customer.name.toLowerCase().includes(t) || (s.invoice_date || '').includes(t));
     if (!l.length) return '<tr><td colspan="6" class="empty">' + (I.list.length ? 'No invoice matches.' : 'No invoices yet. They show here once a sale is completed at the Counter.') + '</td></tr>';
-    return l.map((s) => '<tr data-ivrow="' + s.id + '" class="ctpick' + (I.sel === s.id ? ' pick' : '') + '" data-guide="invoices-list-row"><td><b>' + s.number + '</b></td><td>' + esc(shortDate(s.invoice_date, true)) + '</td>' +
-      '<td><b>' + esc(s.customer.name) + '</b><small>' + esc(s.customer.store_no ? 'Store #' + s.customer.store_no : '') + '</small></td><td class="n">' + s.units + '</td><td class="n">' + $(s.total) + '</td><td class="mut">' + esc(s.posted_by || '') + '</td></tr>').join('');
+    return l.map((s) => '<tr data-ivrow="' + s.id + '" class="ctpick' + (I.sel === s.id ? ' pick' : '') + (s.status === 'void' ? ' ivvoid' : '') + '" data-guide="invoices-list-row"><td><b>' + s.number + '</b>' +
+      (s.kind === 'credit' ? ' <span class="tag crtag">Credit</span>' : '') + (s.status === 'void' ? ' <span class="tag bad">Void</span>' : '') + '</td><td>' + esc(shortDate(s.invoice_date, true)) + '</td>' +
+      '<td><b>' + esc(s.customer.name) + '</b><small>' + esc(s.customer.store_no ? 'Store #' + s.customer.store_no : '') + '</small></td><td class="n">' + s.units + '</td><td class="n' + (s.kind === 'credit' ? ' ctcr' : '') + '">' + $(s.total) + '</td><td class="mut">' + esc(s.posted_by || '') + '</td></tr>').join('');
   }
   function invoicesHtml() {
     if (!A.ivs) return '<h1>Invoices</h1><div class="card"><p class="sm">Loading…</p></div>';
     const I = A.ivs, sel = I.sel && I.list.find((s) => s.id === I.sel);
     const table = '<div class="tcard"><table class="t"><thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th class="n">Items</th><th class="n">Total</th><th>By</th></tr></thead><tbody id="iv-rows">' + invRows() + '</tbody></table></div>';
-    const panel = sel ? '<aside class="card panel ivpan"><div class="hdr"><h2>Invoice ' + sel.number + '</h2><button class="x" id="iv-x" aria-label="Close" data-guide="invoices-invoice-close">×</button></div>' +
-      '<p class="sm">' + esc(sel.customer.name) + ' · ' + esc(shortDate(sel.invoice_date, true)) + ' · charged to account</p>' +
-      '<table class="t"><tbody>' + sel.lines.map((l) => '<tr><td><b>' + esc(l.name) + '</b><small>' + esc(l.size) + (l.shipped < l.ordered ? ' · ' + (l.ordered - l.shipped) + ' short' : '') + '</small></td><td class="n">' + l.shipped + ' × ' + $(l.unit_price) + '</td><td class="n"><b>' + $(l.total) + '</b></td></tr>').join('') +
+    const cr = sel && sel.kind === 'credit', what = cr ? 'Credit memo ' : 'Invoice ';
+    const lineSub = (l) => cr ? (l.other ? esc(creditWhy(l.reason)) : esc(l.size) + ' · ' + esc(creditWhy(l.reason))) : esc(l.size) + (l.shipped < l.ordered ? ' · ' + (l.ordered - l.shipped) + ' short' : '');
+    const voidBox = sel && sel.status === 'void' ? '<div class="ivvoidbar"><b>Void</b> · ' + esc(sel.void_by || '') + ' · ' + esc(when(sel.void_at)) + '<br>' + esc(sel.void_why || '') + '<span class="sm">Kept for your records. It no longer counts in what the store owes.</span></div>' : '';
+    const V = I.vo && sel && I.vo.id === sel.id ? I.vo : null;
+    const voidAsk = sel && sel.status === 'posted' && X.isMgr() ? (V ? '<div class="card ivvoidask"><b>Void ' + what.toLowerCase() + sel.number + '?</b><p class="sm">It stays in your records marked void and stops counting in what ' + esc(sel.customer.name) + ' owes. Tell the store if they already have it.</p>' +
+        '<label class="fld"><span>Why?</span><input id="iv-vwhy" value="' + esc(V.why) + '" placeholder="e.g. rang up the wrong store" data-guide="invoices-invoice-void-why"></label><p class="fmsg" id="iv-verr"></p>' +
+        '<div class="rowr"><button class="btn" id="iv-vno" data-guide="invoices-invoice-void-cancel">Keep it</button><button class="btn red" id="iv-vyes" data-guide="invoices-invoice-void-confirm">Void it</button></div></div>'
+      : '<button class="lnk bad ivvoidlnk" id="iv-void" data-guide="invoices-invoice-void">Void this ' + (cr ? 'credit' : 'invoice') + '…</button>') : '';
+    const panel = sel ? '<aside class="card panel ivpan"><div class="hdr"><h2>' + what + sel.number + '</h2><button class="x" id="iv-x" aria-label="Close" data-guide="invoices-invoice-close">×</button></div>' +
+      '<p class="sm">' + esc(sel.customer.name) + ' · ' + esc(shortDate(sel.invoice_date, true)) + ' · ' + (cr ? 'credited to account' : 'charged to account') + '</p>' + voidBox +
+      '<table class="t"><tbody>' + sel.lines.map((l) => '<tr><td><b>' + esc(l.name) + '</b><small>' + lineSub(l) + '</small></td><td class="n">' + (l.other ? '' : Math.abs(l.shipped) + ' × ') + $(l.unit_price) + '</td><td class="n"><b>' + $(l.total) + '</b></td></tr>').join('') +
       '<tr><td><b>Total</b></td><td></td><td class="n"><b>' + $(sel.total) + '</b></td></tr></tbody></table>' +
-      (sel.lic_reason ? '<p class="sm">Sold without a license: ' + esc(sel.lic_reason) + '</p>' : '') + iv.panelHtml(sel) + '</aside>' : '';
+      (sel.lic_reason ? '<p class="sm">Licenses at the time: ' + esc(String(sel.lic_reason).replace(/^Sold with: /, '')) + '</p>' : '') + iv.panelHtml(sel) + voidAsk + '</aside>' : '';
     return '<div class="hdr"><h1>Invoices<span class="count">' + I.list.length + '</span></h1></div>' +
       '<div class="bar"><input class="inp q" id="iv-q" type="search" placeholder="Invoice #, customer or date (2026-11-27)" value="' + esc(I.q) + '" data-guide="invoices-list-search"></div>' +
       (sel ? '<div class="wrap2">' + table + panel + '</div>' : table);
@@ -489,7 +584,20 @@ export function makeCounter(X) {
     const iq = q('#iv-q'); iq.oninput = () => { A.ivs.q = iq.value; q('#iv-rows').innerHTML = invRows(); rows(); };
     function rows() { $$('[data-ivrow]').forEach((r) => { r.onclick = () => { A.ivs.sel = r.dataset.ivrow; X.render(); }; }); }
     rows();
-    const x = q('#iv-x'); if (x) x.onclick = () => { A.ivs.sel = null; A.ivp = null; X.render(); };
+    const x = q('#iv-x'); if (x) x.onclick = () => { A.ivs.sel = null; A.ivp = null; A.ivs.vo = null; X.render(); };
+    const vb = q('#iv-void'); if (vb) vb.onclick = () => { A.ivs.vo = { id: A.ivs.sel, why: '' }; X.render(); const w = q('#iv-vwhy'); if (w) w.focus(); };
+    const vw = q('#iv-vwhy'); if (vw) vw.oninput = () => { A.ivs.vo.why = vw.value; };
+    const vn = q('#iv-vno'); if (vn) vn.onclick = () => { A.ivs.vo = null; X.render(); };
+    const vy = q('#iv-vyes'); if (vy) vy.onclick = async () => {
+      const V = A.ivs.vo; if (!V.why.trim()) { q('#iv-verr').textContent = 'Say why it’s void. It goes in History.'; return; }
+      vy.disabled = true;
+      try {
+        const r = await db.saleVoid(A.cid, V.id, V.why.trim());
+        const i = A.ivs.list.findIndex((y) => y.id === r.id); if (i >= 0) A.ivs.list[i] = Object.assign(A.ivs.list[i], r);
+        A.ivs.vo = null; A.ivp = null; A.stoday = null; X.load(true); X.say('✓ ' + (r.kind === 'credit' ? 'Credit memo ' : 'Invoice ') + r.number + ' is void');
+      } catch (e) { q('#iv-verr').textContent = e.message; vy.disabled = false; return; }
+      X.render();
+    };
     const sel = A.ivs.sel && A.ivs.list.find((s) => s.id === A.ivs.sel); if (sel) iv.bindPanel(sel);
   }
 
