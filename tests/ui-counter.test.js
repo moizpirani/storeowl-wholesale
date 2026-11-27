@@ -85,7 +85,7 @@ test('Counter: find, scan, quantity, suspend, review, complete', async () => {
 
   // Complete → charge to account → invoice 1001; the screen clears.
   $('#ct-complete').click(); await tick(); checkTags('complete');
-  type('#ct-licwhy2', 'Bringing it Monday'); $('#ct-post').click(); await tick(6);
+  $('#ct-post').click(); await tick(6);
   assert.match($('#app').textContent, /Invoice 1001 posted/);
   assert.ok(!/Maynardville/.test($('#app').textContent), 'the screen clears after a sale');
   assert.equal(db.S.sales[0].status, 'posted');
@@ -108,7 +108,7 @@ test('Counter: find, scan, quantity, suspend, review, complete', async () => {
   assert.match($('#app').textContent, /Price check/);
   $('[data-rvopen]').click(); await tick();
   assert.match($('#app').textContent, /Sent for review/);
-  $('#ct-complete').click(); await tick(); type('#ct-licwhy2', 'Owner OK'); $('#ct-post').click(); await tick(6);
+  $('#ct-complete').click(); await tick(); $('#ct-post').click(); await tick(6);
   assert.match($('#app').textContent, /Invoice 1002 posted/);
 
   // Invoices list.
@@ -127,35 +127,40 @@ test('Counter: find, scan, quantity, suspend, review, complete', async () => {
   assert.equal(db.S.items.find((x) => x.name === 'Grabba Leaf Small').sizes[0].upc, '070221005126');
 });
 
-test('Counter: license warning per the owner’s choice', async () => {
+test('Counter: licenses only shown to owners and managers; never asked at the Counter', async () => {
   const db = makeFake({ signedIn: 'owner@example.com' });
   const c = await db.createCompany({ name: 'Knox', home: 'KY', your_name: 'Sam' });
   await db.itemPut(c.id, { name: 'Seneca FF', category: 'cigarettes', sizes: [{ name: 'Carton', n: 10, upc: '014700319017', prices: { 1: 34.5 } }] });
-  await db.customerPut(c.id, { name: 'Corbin Market', level: 1 });
+  const cu = await db.customerPut(c.id, { name: 'Corbin Market', level: 1 });
   const A = startApp(document.getElementById('app'), db);
   await tick();
+  // Home: Needs you line for the owner.
+  assert.match($('#app').textContent, /1 customer is missing a license number/);
   const ring = async () => {
     $('[data-go="counter"]').click(); await tick();
     $('#ct-new').click(); await tick(); type('#ct-cq', 'corbin'); key('#ct-cq', 'Enter'); await tick();
     type('#ct-scan', '014700319017'); key('#ct-scan', 'Enter'); await tick();
   };
   await ring();
-  // KY needs resale + tobacco by default: warn, and ask why when completing.
-  assert.match($('.ctlic').textContent, /No resale number · No tobacco license[\s\S]*You can still sell/);
-  checkTags('license warning');
-  $('#ct-complete').click(); await tick(); $('#ct-post').click(); await tick();
-  assert.match($('#ct-perr').textContent, /Say why/);
-  type('#ct-licwhy2', 'Copy coming Friday'); $('#ct-post').click(); await tick(6);
+  // KY needs resale + tobacco by default: no box, no reason; the owner sees a small chip.
+  assert.ok(!$('.ctlic')); assert.ok(!$('#ct-licwhy'));
+  assert.match($('#ct-lic').textContent, /Licenses: 2 to fix/);
+  checkTags('license chip');
+  $('#ct-complete').click(); await tick(); assert.ok(!$('#ct-licwhy2'));
+  $('#ct-post').click(); await tick(6);
   assert.match($('#app').textContent, /Invoice 1001 posted/);
-  assert.equal(db.S.sales[0].lic_reason, 'Copy coming Friday');
-  assert.ok(db.S.log.some((l) => l.what === 'invoice posted' && l.detail.license_reason === 'Copy coming Friday'));
+  assert.match(db.S.sales[0].lic_reason, /^Sold with: No resale number, No tobacco license/);
+  assert.ok(db.S.log.some((l) => l.what === 'invoice posted' && /No resale number/.test(l.detail.license_reason)));
 
-  // The owner turns the Counter warning off: nothing shows at the Counter, the customer page still shows it.
-  $('[data-go="settings"]').click(); await tick(); $('[data-stab="licenses"]').click(); await tick();
-  $('#lr-off').click(); await tick(); checkTags('license rules off');
-  $('#lr-save').click(); await tick(6);
-  assert.equal(db.S.companies[0].settings.lic_mode, 'off');
+  // The chip opens the customer's Licenses tab.
+  await ring(); $('#ct-lic').click(); await tick();
+  assert.equal(A.view, 'customers'); assert.equal(A.cu.open, cu.id); assert.equal(A.cu.tab, 'licenses');
+
+  // Staff never see it.
+  db.S.members.find((m) => m.company_id === c.id).role = 'staff';
+  A.companies = await db.myCompanies(); A.ct = null;
   await ring();
-  assert.ok(!$('.ctlic')); assert.ok(!/Licenses/.test($('.ctcust').textContent));
+  assert.ok(!$('#ct-lic')); assert.ok(!/Licenses/.test($('.ctcust').textContent));
   assert.equal(A.ct.sale.lines.length, 1);
 });
+

@@ -46,7 +46,7 @@ test('After a sale: print, email the invoice and the EDI file; then the Invoices
   $('#ct-new').click(); await tick(); type('#ct-cq', 'mayn'); key('#ct-cq', 'Enter'); await tick();
   type('#ct-scan', '014700319017'); key('#ct-scan', 'Enter'); await tick();
   type('[data-cto="0"]', '3'); key('[data-cto="0"]', 'Enter'); await tick();
-  $('#ct-complete').click(); await tick(); type('#ct-licwhy2', 'Copy coming'); $('#ct-post').click(); await tick(10);
+  $('#ct-complete').click(); await tick(); $('#ct-post').click(); await tick(10);
   assert.match($('#app').textContent, /Invoice 1001 posted/);
   checkTags('send choices');
   assert.ok($('[data-ivk="print"]').checked); assert.ok(!$('[data-ivk="email"]').checked); assert.ok($('[data-ivk="edi"]').checked);

@@ -47,14 +47,13 @@ test('price levels, items and customers', async () => {
   $('[data-stab="licenses"]').click(); await tick(); checkTags('settings license rules');
   assert.match($('#app').textContent, /Tennessee doesn’t license stores to sell tobacco/);
   assert.ok($('[data-lrk="TN|resale"]').checked && $('[data-lrk="TN|hemp"]').checked && !$('[data-lrk="TN|tobacco"]').checked);
-  assert.ok($('#lr-warn').classList.contains('on'));
+  assert.ok(!$('#lr-warn') && !$('#lr-ask'), 'no Counter choice any more');
   const tobBox = $('[data-lrk="TN|tobacco"]'); tobBox.checked = true; tobBox.dispatchEvent(new dom.window.Event('change'));
   assert.equal($('[data-lrk="TN|tobacco"]'), tobBox, 'ticking never redraws');
   assert.ok(!$('#lr-bar').classList.contains('hide'));
   pick('#lr-days', '60'); $('#lr-save').click(); await tick();
   assert.equal(db.S.companies[0].settings.remind_days, 60);
   assert.deepEqual(db.S.companies[0].settings.lic_need, { TN: ['resale', 'location', 'tobacco', 'hemp'] });
-  assert.equal(db.S.companies[0].settings.lic_mode, 'warn');
   assert.ok($('[data-lrsug="TN"]'), 'can go back to the suggested list');
 
   // Items: add one with two sizes; the margin updates while typing.

@@ -3,7 +3,8 @@
 // and Items → Barcodes to add (barcodes scanned at the counter that no item has).
 // Privacy at the counter: no recent customers, search shows name · store # · city only, balances hidden behind Show (5 seconds),
 // and the screen clears after every sale. Typing never redraws: boxes update the numbers around them in place.
-// Nothing ever stops a sale: license problems only warn (or, if the owner picked it, staff send the sale for a manager's OK).
+// Nothing ever stops a sale and employees never see license problems: owners / managers get a small chip that opens the
+// customer's Licenses tab, and each sale to a store with a missing / ended license is written in its History by itself.
 
 import {
   catName, termName, money, settingsOf, saleWarnings, problemText, priceSale, saleCheck, findUpc, cleanUpc, upcShow,
@@ -50,7 +51,7 @@ export function makeCounter(X) {
   // License problems for what's on this sale ('' when the owner turned the Counter warning off).
   function licWarn() {
     const c = cust(), st = sets();
-    if (!c || st.lic_mode === 'off') return [];
+    if (!c) return [];
     const cats = Array.from(new Set(priced().lines.filter((l) => l.category).map((l) => l.category)));
     const seen = {}, out = [];
     (cats.length ? cats : ['_none']).forEach((cat) => saleWarnings(c, cat, st, today(), co().home).forEach((p) => {
@@ -58,7 +59,7 @@ export function makeCounter(X) {
     }));
     return out;
   }
-  const askBlocks = () => sets().lic_mode === 'ask' && !X.isMgr() && licWarn().length > 0;
+  const licAuto = (w) => w.length ? 'Sold with: ' + w.map((p) => problemText(p)).join(', ') : '';
 
   // ---------- Counter main screen ----------
   function homeHtml() {
@@ -139,8 +140,8 @@ export function makeCounter(X) {
   function saleHtml() {
     const S = C(), s = S.sale, c = cust();
     if (!c) return '<h1>Counter</h1><div class="card"><p class="sm">This customer isn’t in your list any more.</p><button class="btn" id="ct-change" data-guide="counter-sale-change">Pick a customer</button></div>';
-    const pl = priced(), warn = licWarn(), mode = sets().lic_mode, mgr = X.isMgr();
-    const licChip = mode === 'off' ? '' : warn.length ? '<span class="tag need big">Licenses: ' + warn.length + ' to check</span>' : '<span class="tag ok big">✓ Licenses OK</span>';
+    const pl = priced(), warn = licWarn(), mgr = X.isMgr();
+    const licChip = mgr && warn.length ? '<button class="tag need big ctlicchip" id="ct-lic" title="' + esc(warn.map((p) => problemText(p)).join(' · ')) + '" data-guide="counter-sale-licenses">Licenses: ' + warn.length + ' to fix ›</button>' : '';
     const head = '<div class="card ctcust"><div class="av">' + esc(initials(c.name)) + '</div><div class="ctwho"><b>' + esc(c.name) + '</b><span>' +
       esc([c.store_no ? 'Store #' + c.store_no : '', c.city, termName(c.terms)].filter(Boolean).join(' · ')) + '</span></div>' +
       hidden('owes', 'Owes') + (c.credit_limit != null ? hidden('credit', 'Credit left') : '') + licChip +
@@ -150,9 +151,7 @@ export function makeCounter(X) {
       esc(when(others[0].created_at)) + '.<button class="btn sm" data-ctopen="' + others[0].id + '" data-guide="counter-sale-open-suspended">Open it</button></div>' : '';
     const rv = s.status === 'review' ? '<div class="ctbar rv"><b>Sent for review</b> by ' + esc(s.by_name || '—') + ' · ' + esc(s.why || '') +
       '<span class="sm">The invoice will be dated ' + esc(shortDate((s.sent_at || '').slice(0, 10), true)) + ', the day it was sent.</span></div>' : '';
-    const lic = warn.length ? '<div class="licbar ctlic"><div class="tx"><b>' + esc(warn.map((p) => problemText(p)).join(' · ')) + '</b><br>' +
-      (mode === 'ask' && !mgr ? 'A manager needs to OK this sale. Use <b>Send for review</b>.' : 'You can still sell. Say why, and it goes in the customer’s History.') + '</div>' +
-      (mode === 'ask' && !mgr ? '' : '<input class="inp" id="ct-licwhy" placeholder="Why sell anyway?" value="' + esc(S.lic) + '" data-guide="counter-sale-license-reason">') + '</div>' : '';
+    const lic = '';
     const unk = S.unk ? '<div class="ctunk"><div class="tx"><b>No item has barcode ' + esc(upcShow(S.unk)) + '.</b> It’s been sent to your manager to add. Type the item’s name to keep selling.</div>' +
       '<button class="btn sm" id="ct-unk-x" data-guide="counter-sale-unknown-ok">OK</button></div>' : '';
     const scan = '<div class="ctscan"><input class="ctbig" id="ct-scan" placeholder="Scan a barcode, or type an item name" autocomplete="off" value="' + esc(S.nq) + '" data-guide="counter-sale-scan">' +
@@ -164,7 +163,7 @@ export function makeCounter(X) {
       '<div class="ctkv tot"><b>Invoice total</b><b id="ct-total">' + $(pl.total) + '</b></div>' +
       '<div class="ctkv"><span>Paid by</span><span>Charge to account</span></div>' +
       '<div class="ctbtns">' + (s.status === 'review' ? '' : '<button class="btn" id="ct-suspend" data-guide="counter-sale-suspend">Suspend</button><button class="btn" id="ct-review" data-guide="counter-sale-send-review">Send for review</button>') + '</div>' +
-      '<button class="btn amber ctgo" id="ct-complete" data-guide="counter-sale-complete"' + (askBlocks() ? ' disabled' : '') + '>Complete sale</button>' +
+      '<button class="btn amber ctgo" id="ct-complete" data-guide="counter-sale-complete"' + '' + '>Complete sale</button>' +
       '<button class="lnk ctclear" id="ct-clear" data-guide="counter-sale-clear">' + (S.clear ? 'Tap again to ' + (isNew ? 'clear this sale' : 'cancel this sale') : isNew ? 'Clear sale' : 'Cancel sale') + '</button></aside>';
     return '<h1>Counter</h1><div class="ctwrap"><div class="ctmain">' + head + rv + held + lic + unk + scan + '<div id="ct-lines">' + linesHtml(pl) + '</div></div>' + side + '</div>' + panelHtml(pl, warn);
   }
@@ -195,10 +194,8 @@ export function makeCounter(X) {
   function panelHtml(pl, warn) {
     const S = C();
     if (S.panel === 'complete') {
-      const need = warn.length && sets().lic_mode !== 'off';
       return '<div class="ctmodal"><div class="card ctpan"><h2>Complete sale</h2><div class="ctkv tot"><b>Invoice total</b><b>' + $(pl.total) + '</b></div>' +
         '<div class="seg"><button class="on" data-guide="counter-complete-charge">Charge to account</button></div>' +
-        (need ? '<label class="fld"><span>Why sell anyway? (licenses: ' + esc(warn.map((p) => problemText(p)).join(', ')) + ')</span><input id="ct-licwhy2" value="' + esc(S.lic) + '" data-guide="counter-complete-license-reason"></label>' : '') +
         '<p class="fmsg" id="ct-perr"></p><div class="rowr"><button class="btn" id="ct-pback" data-guide="counter-complete-back">Back</button>' +
         '<button class="btn amber" id="ct-post" data-guide="counter-complete-post"' + (S.busy ? ' disabled' : '') + '>Post invoice</button></div></div></div>';
     }
@@ -394,7 +391,7 @@ export function makeCounter(X) {
     });
     $$('[data-ctsz]').forEach((b) => { b.onclick = () => { const [i, z] = b.dataset.ctsz.split('|'); s.lines[+i].size_id = z; X.render(); }; });
     $$('[data-ctrm]').forEach((b) => { b.onclick = () => { s.lines.splice(+b.dataset.ctrm, 1); X.render(); focusScan(); }; });
-    const lw = q('#ct-licwhy'); if (lw) lw.oninput = () => { S.lic = lw.value; };
+    g('#ct-lic', () => { const c0 = cust(); if (c0) X.openCust(c0.id, 'licenses'); });
     g('#ct-clear', async () => {
       if (!S.clear) { S.clear = 1; X.render(); setTimeout(() => { if (C().clear) { C().clear = 0; if (A.view === 'counter') X.render(); } }, 4000); return; }
       if (!s.id) return reset('Sale cleared');
@@ -402,30 +399,27 @@ export function makeCounter(X) {
     });
     g('#ct-suspend', async () => {
       if (!s.lines.length) { X.say('Scan at least one item first', true); return X.render(); }
-      const r = await save('suspend', { lic_reason: S.lic }); if (r) reset('Suspended · ' + r.customer.name + ' · finish it by closing');
+      const r = await save('suspend', { lic_reason: licAuto(licWarn()) }); if (r) reset('Suspended · ' + r.customer.name + ' · finish it by closing');
     });
     g('#ct-review', () => {
       if (!s.lines.length) { X.say('Scan at least one item first', true); return X.render(); }
-      S.panel = 'review'; S.why = licWarn().length && sets().lic_mode === 'ask' ? ['License'] : []; S.note = ''; X.render();
+      S.panel = 'review'; S.why = []; S.note = ''; X.render();
     });
     g('#ct-complete', () => {
       const bad = saleCheck(priced()); if (bad) { X.say(bad, true); return X.render(); }
-      S.panel = 'complete'; X.render(); setTimeout(() => { const b = q('#ct-licwhy2') || q('#ct-post'); if (b) b.focus(); }, 0);
+      S.panel = 'complete'; X.render(); setTimeout(() => { const b = q('#ct-post'); if (b) b.focus(); }, 0);
     });
     g('#ct-pback', () => { S.panel = null; X.render(); });
     $$('[data-ctwhy]').forEach((b) => { b.onclick = () => { const w = b.dataset.ctwhy, i = S.why.indexOf(w); if (i >= 0) S.why.splice(i, 1); else S.why.push(w); b.classList.toggle('on', i < 0); }; });
     const rn = q('#ct-rnote'); if (rn) rn.oninput = () => { S.note = rn.value; };
-    const l2 = q('#ct-licwhy2'); if (l2) { l2.oninput = () => { S.lic = l2.value; }; l2.onkeydown = (e) => { if (e.key === 'Enter') q('#ct-post').click(); }; }
     g('#ct-rsend', async () => {
       const why = S.why.concat(S.note.trim() ? [S.note.trim()] : []).join(' · ');
       if (!why) { q('#ct-perr').textContent = 'Pick what the manager should check, or type a note.'; return; }
-      const r = await save('review', { why, lic_reason: S.lic }); if (r) reset('Sent for review · ' + r.customer.name);
+      const r = await save('review', { why, lic_reason: licAuto(licWarn()) }); if (r) reset('Sent for review · ' + r.customer.name);
     });
     g('#ct-post', async () => {
-      const warn = licWarn();
-      if (warn.length && !S.lic.trim()) { q('#ct-perr').textContent = 'Say why you’re selling without the license. It goes in the customer’s History.'; return; }
       q('#ct-post').disabled = true;
-      const r = await save('complete', { lic_reason: warn.length ? S.lic.trim() : '' });
+      const r = await save('complete', { lic_reason: licAuto(licWarn()) });
       if (!r) { const b = q('#ct-post'); if (b) b.disabled = false; return; }
       const susp = S.susp; A.ct = fresh(); A.ct.susp = susp; A.ct.step = 'done'; A.ct.done = { sale: r }; X.say('');
       A.rvn = null; A.ivs = null; A.stoday = null; loadSusp(true); X.load(true); X.render();

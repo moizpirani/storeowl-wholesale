@@ -9,7 +9,7 @@ import { STATES, stateName, neighborsOf, cleanStates, statesLine } from './state
 import { makeCatalog } from './catalog.js';
 import { makeImport } from './importui.js';
 import { makeCounter } from './counter.js';
-import { custIssues, itemIssues, settingsOf, todayIso, licName } from './rules.js';
+import { custIssues, itemIssues, settingsOf, todayIso, licName, licProblems } from './rules.js';
 
 const IC = {
   home: 'M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -68,7 +68,7 @@ export function startApp(root, db) {
   const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
     render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k) });
   const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
-  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), replaceCo: (c) => replaceCo(c) });
+  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
@@ -305,10 +305,13 @@ export function startApp(root, db) {
     const st = settingsOf(c), t = todayIso();
     const cNeed = custs.filter((x) => custIssues(x, st, t, c.home).length).length, iNeed = items.filter((x) => itemIssues(x, c.levels).length).length;
     const n = (v) => (A.items ? v.toLocaleString() : '…');
+    const licN = isMgr() ? custs.filter((x) => licProblems(x, st, t, c.home).length).length : 0;
+    const needCard = licN ? '<div class="card hneed"><h2>Needs you</h2><div class="hnrow"><span class="tag need">Licenses</span><b>' + licN + ' ' + (licN === 1 ? 'customer is' : 'customers are') +
+      ' missing a license number or it ended</b><button class="btn sm" data-hgo="customers:lic" data-guide="home-needs-licenses">See them ›</button></div></div>' : '';
     return '<h1>' + greet() + (name ? ', ' + esc(name) : '') + '</h1>' +
       '<div class="bxs">' + box('Sales today', A.stoday ? '$' + A.stoday.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '…', A.stoday ? (A.stoday.n ? A.stoday.n + ' invoice' + (A.stoday.n === 1 ? '' : 's') : 'No invoices yet') : '') + box('Customers', n(custs.length), cNeed ? '<span class="miss">' + cNeed + ' need you</span>' : '') +
       box('Items', n(items.length), iNeed ? '<span class="miss">' + iNeed + ' need you</span>' : '') + box('Selling in', String(1 + c.others.length), esc(statesLine(c.home, c.others))) + '</div>' +
-      '<div class="card"><h2>Getting set up</h2><table class="t"><tbody>' +
+      needCard + '<div class="card"><h2>Getting set up</h2><table class="t"><tbody>' +
       row(true, 'Company details', esc(c.name), 'settings:company', 'home-setup-company') +
       row(true, 'Your states', esc(statesLine(c.home, c.others)), 'settings:states', 'home-setup-states') +
       row(!!invited, 'Your team', invited ? 'Invited' : 'Optional', 'settings:people', 'home-setup-team') +
@@ -317,7 +320,7 @@ export function startApp(root, db) {
       '</tbody></table></div>';
   }
   function bindHome() {
-    root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; if (t) A.stab = t; render(); }; });
+    root.querySelectorAll('[data-hgo]').forEach((b) => { b.onclick = () => { const [v, t] = b.dataset.hgo.split(':'); A.view = v; if (v === 'customers') { if (A.cu) { A.cu.open = null; A.cu.f = t || 'all'; } else A.cuF = t; } else if (t) A.stab = t; render(); }; });
     cat.load();
     if (!A.stoday) { const t = todayIso(); db.sales(A.cid, 'posted').then((l) => { const d = l.filter((x) => x.invoice_date === t); A.stoday = { n: d.length, total: Math.round(d.reduce((a, x) => a + Number(x.total), 0) * 100) / 100 }; if (A.view === 'home') render(); }).catch(() => { A.stoday = { n: 0, total: 0 }; }); }
     if (!A.people) db.members(A.cid).then((p) => { A.people = p; if (A.view === 'home') render(); }).catch(() => { /* home still works */ });

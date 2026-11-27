@@ -29,4 +29,7 @@ export async function seedDemo(db) {
   await cu({ name: 'Halls Crossroads Exxon', store_no: '143', city: 'Knoxville', level: 1, terms: 'net7', credit_limit: 4000 }, [{ kind: 'resale', number: '0106620981' }, { kind: 'tobacco', number: '46-4410077', expires: '2027-12-31' }]);
   await cu({ name: 'Norris Freeway Shell', store_no: '162', city: 'Norris', level: 1, terms: 'net7', credit_limit: 5000 }, [{ kind: 'resale', number: '0109934410' }, { kind: 'tobacco', number: '46-5528810', expires: '2027-05-31' }]);
   await cu({ name: 'Emory Road Market', store_no: '077', city: 'Powell', level: 2, terms: 'net14', credit_limit: 3000 }, [{ kind: 'resale', number: '0105529007' }, { kind: 'tobacco', number: '46-7702214', expires: '2027-08-31' }]);
+  // Pictures as another role (VITE_FAKE_ROLE=staff): the demo's one member takes that role.
+  const role = import.meta.env && import.meta.env.VITE_FAKE_ROLE;
+  if (role && db.S) db.S.members.forEach((m) => { if (m.company_id === c.id) m.role = role; });
 }

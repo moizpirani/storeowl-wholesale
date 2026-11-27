@@ -25,7 +25,7 @@ export function makeCatalog(X) {
   const money$ = (v) => (v == null ? '' : '$' + money(v));
   const copy = (o) => JSON.parse(JSON.stringify(o));
   if (!A.it) A.it = { q: '', f: 'all', cat: '', sel: null, ed: null, orig: '', tab: 'item', err: '', more: PAGE };
-  if (!A.cu) A.cu = { q: '', f: 'all', lvl: '', open: null, data: null, tab: 'overview', ed: null, orig: '', led: null, lorig: '', pq: '', note: '', err: '', more: PAGE };
+  if (!A.cu) A.cu = { q: '', f: A.cuF || 'all', lvl: '', open: null, data: null, tab: 'overview', ed: null, orig: '', led: null, lorig: '', pq: '', note: '', err: '', more: PAGE };
 
   // ---------- loading ----------
   function load(force) {
@@ -410,6 +410,7 @@ export function makeCatalog(X) {
     const S = A.cu, st = sets(), t = today();
     return (A.custs || []).filter((c) => (S.f === 'off' ? c.active === false : c.active !== false))
       .filter((c) => S.f !== 'need' || custIssues(c, st, t, home()).length)
+      .filter((c) => S.f !== 'lic' || licProblems(c, st, t, home()).length)
       .filter((c) => !S.lvl || c.level === +S.lvl)
       .filter((c) => custMatch(c, S.q));
   }
@@ -434,12 +435,13 @@ export function makeCatalog(X) {
     if (A.cu.open) return custPageHtml();
     const S = A.cu, all = A.custs, mgr = X.isMgr(), st = sets(), t = today();
     const act = all.filter((c) => c.active !== false);
-    const need = act.filter((c) => custIssues(c, st, t, home()).length).length, off = all.length - act.length;
+    const need = act.filter((c) => custIssues(c, st, t, home()).length).length, licN = act.filter((c) => licProblems(c, st, t, home()).length).length, off = all.length - act.length;
     const owes = act.reduce((s, c) => s + (c.owes || 0), 0);
     return '<div class="hdr"><h1>Customers<span class="count">' + act.length.toLocaleString() + '</span></h1>' + (mgr ? '<button class="btn" id="cu-import" data-guide="customers-list-import">Bring in from your old system</button><button class="btn amber" id="cu-add" data-guide="customers-list-add">+ Add customer</button>' : '') + '</div>' +
       '<div class="bar"><input class="inp q" id="cu-q" type="search" placeholder="Search name, store #, phone or license #" value="' + esc(S.q) + '" data-guide="customers-list-search">' +
       '<div class="seg2"><button class="' + (S.f === 'all' ? 'on' : '') + '" data-cuf="all" data-guide="customers-list-filter">All</button>' +
       '<button class="or' + (S.f === 'need' ? ' on' : '') + '" data-cuf="need" data-guide="customers-list-filter">Needs you<b>' + need + '</b></button>' +
+      (licN ? '<button class="or' + (S.f === 'lic' ? ' on' : '') + '" data-cuf="lic" data-guide="customers-list-filter">Licenses to fix<b>' + licN + '</b></button>' : '') +
       (off ? '<button class="' + (S.f === 'off' ? 'on' : '') + '" data-cuf="off" data-guide="customers-list-filter">Stopped<b>' + off + '</b></button>' : '') + '</div>' +
       '<select class="sel" id="cu-lvl" data-guide="customers-list-level">' + opt('', 'Every price level', !S.lvl) + levels().map((l) => opt(l.n, l.name, String(l.n) === String(S.lvl))).join('') + '</select></div>' +
       '<div class="tcard"><table class="t"><thead><tr><th>Customer</th><th>Terms</th><th>Resale #</th><th class="n">Owes</th><th class="n">Credit limit</th><th>Status</th></tr></thead><tbody id="cu-rows">' + custRowsHtml() + '</tbody></table>' +
@@ -696,7 +698,7 @@ export function makeCatalog(X) {
       copyPanel(c, ro) +
       '<div class="cc"><div class="cch"><b>When a license runs out</b>' + (X.isMgr() ? '<button class="lnk" id="cu-licrules" data-guide="customers-licenses-rules">Change in Settings ›</button>' : '') + '</div><div class="ccb">' +
       '<div class="kv"><span>Needed in ' + esc(stName) + '</span><b>' + (need.length ? need.map(licName).map(esc).join(', ') : 'None') + '</b></div>' +
-      '<div class="kv"><span>Missing or ended</span><b>' + (st.lic_mode === 'ask' ? 'Warn and ask for a manager’s OK' : 'Only warn me') + '</b></div>' +
+      '<div class="kv"><span>Missing or ended</span><b>Shown to owners and managers · never stops a sale</b></div>' +
       '<div class="kv"><span>Remind me before a license ends</span><b>' + (st.remind_days ? st.remind_days + ' days' : 'Off') + '</b></div></div></div>' +
       (ro ? '' : '<div class="savebar wide' + (dirty ? '' : ' hide') + '" id="cl-bar"><span id="cl-err" class="' + (S.err ? 'bad' : '') + '">' + esc(S.err || 'Not saved yet') + '</span><div class="rowr">' +
         '<button class="btn" id="cl-undo" data-guide="customers-licenses-undo">Undo</button><button class="btn amber" id="cl-save" data-guide="customers-licenses-save">Save</button></div></div>');
@@ -897,12 +899,12 @@ export function makeCatalog(X) {
   function lrStart() {
     const s = settingsOf(co()), need = {};
     coStates().forEach((st) => { need[st] = licNeeded(s, st).slice(); });
-    return { lic_mode: s.lic_mode === 'ask' ? 'ask' : 'warn', remind_days: s.remind_days, lic_need: need };
+    return { remind_days: s.remind_days, lic_need: need };
   }
   const sameNeed = (a, b) => LICENSES.every(([k]) => a.includes(k) === b.includes(k));
   function lrDirty() {
     const R = A.lr, z = lrStart();
-    return R.lic_mode !== z.lic_mode || R.remind_days !== z.remind_days || coStates().some((st) => !sameNeed(R.lic_need[st], z.lic_need[st]));
+    return R.remind_days !== z.remind_days || coStates().some((st) => !sameNeed(R.lic_need[st], z.lic_need[st]));
   }
   function licRulesHtml() {
     const ro = !X.isMgr(), dis = ro ? ' disabled' : '';
@@ -920,10 +922,7 @@ export function makeCatalog(X) {
     return '<div class="card form"><h2>Licenses you need to sell</h2><p class="sm gap">Pick them for each state you sell in. Only these show as needed on your customers.</p>' +
       coStates().map(stBlock).join('') +
       '<h2 class="mt">When a needed license is missing or ended</h2>' +
-      '<div class="seg"><button class="' + (R.lic_mode === 'warn' ? 'on' : '') + '" id="lr-warn" data-guide="settings-licenses-warn-only"' + dis + '>Only warn me</button>' +
-      '<button class="' + (R.lic_mode === 'ask' ? 'on' : '') + '" id="lr-ask" data-guide="settings-licenses-ask-manager"' + dis + '>Ask for a manager’s OK</button>' +
-      (X.isOwner() || R.lic_mode === 'off' ? '<button class="' + (R.lic_mode === 'off' ? 'on' : '') + '" id="lr-off" data-guide="settings-licenses-counter-off"' + (X.isOwner() ? dis : ' disabled') + '>Don’t warn at the Counter</button>' : '') + '</div>' +
-      '<p class="sm">' + (R.lic_mode === 'off' ? 'The Counter won’t warn. Licenses still show on each customer and on Home.' : 'You can always still sell. Every time someone sells anyway, it’s written in the customer’s History.') + '</p>' +
+      '<p class="sm">Employees at the Counter never see it. Owners and managers see it on Home, the customer’s page and the Counter, and each sale is written in the customer’s History.</p>' +
       '<h2 class="mt">Remind me before a license ends</h2><label class="fld narrow"><select id="lr-days" data-guide="settings-licenses-remind"' + dis + '>' +
       [0, 14, 30, 60, 90].map((n) => opt(n, n ? n + ' days before' : 'Don’t remind me', n === R.remind_days)).join('') + '</select></label>' +
       (ro ? '<p class="sm">Only owners and managers can change these.</p>' : '') + '</div>' + saveBarP(lrDirty(), 'lr', 'settings-licenses');
@@ -938,9 +937,6 @@ export function makeCatalog(X) {
       upd();
     }; });
     $$('[data-lrsug]').forEach((b) => { b.onclick = () => { R.lic_need[b.dataset.lrsug] = suggestedLic(b.dataset.lrsug); X.render(); }; });
-    q('#lr-warn').onclick = () => { R.lic_mode = 'warn'; X.render(); };
-    q('#lr-ask').onclick = () => { R.lic_mode = 'ask'; X.render(); };
-    const lo = q('#lr-off'); if (lo) lo.onclick = () => { R.lic_mode = 'off'; X.render(); };
     q('#lr-days').onchange = (e) => { R.remind_days = +e.target.value; upd(); };
     q('#lr-undo').onclick = () => { A.lr = null; X.render(); };
     q('#lr-save').onclick = async () => {
@@ -948,7 +944,7 @@ export function makeCatalog(X) {
       coStates().forEach((st) => { need[st] = LICENSES.map((l) => l[0]).filter((k) => R.lic_need[st].includes(k)); });
       const bad = licNeedCheck(need, coStates());
       if (bad) { q('#lr-err').textContent = bad; return; }
-      try { X.replaceCo(await db.settingsSet(A.cid, { lic_mode: R.lic_mode, remind_days: R.remind_days, lic_need: need })); A.lr = null; A.hist = null; X.say('✓ License rules saved'); } catch (e) { X.say(e.message, true); }
+      try { X.replaceCo(await db.settingsSet(A.cid, { remind_days: R.remind_days, lic_need: need })); A.lr = null; A.hist = null; X.say('✓ License rules saved'); } catch (e) { X.say(e.message, true); }
       X.render();
     };
   }
