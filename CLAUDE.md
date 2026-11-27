@@ -222,8 +222,8 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   "StoreOwl (monthly statements)", `stmt.lastrun`). The key lives only in `job_keys` (no one can read it). **On a new database: set
   `job_keys.url` to that app's address** (test = the git-test vercel.app link). `vercel.json` gives `api/send.js` 60 s. Tests: `statements`,
   `payments` (receipt), `ui-payments`.
-- **Phase 4, parts 1–3 (built 2026-11-27 on branch `phase4`, NOT on test yet; Moiz approved the pictures and said "start building";
-  database sections "Phase 4, part 1" and "part 2" at the end of schema.sql, not yet run on the test database):**
+- **Phase 4, parts 1–3 (built 2026-11-27; Moiz approved the pictures and said "start building"; ON TEST since 2026-11-27, Moiz: "put it on test"; migration `phase4_sells_barcodes_receiving_stock_2026_11_27` on the test database;
+  database sections "Phase 4, part 1" and "part 2" at the end of schema.sql):**
   - **"You sell it" per size** (`item_sizes.sells`, default true; Moiz: the wholesaler only cares about the carton, the pack is there for the
     EDI file). A size with sells = false: no cost / price needed (`itemIssues` skips it), never a Counter size button (`sellSizes`), never
     sold (`_sale_price` refuses it), never a receiving unit; scanning its barcode = the item's main size you sell (`scanSize` → `pack: true`,
