@@ -45,6 +45,20 @@ test('Payments: take one, oldest first, store credit, post-dated, deposit, void,
   type(amt, '160'); assert.match($('#pm-sum').textContent, /\$20\.00 left over · kept as store credit/);
   $('#pm-save').click(); await tick(10);
   assert.match($('.toast').textContent, /Payment 1001 saved · \$160\.00/);
+  // The receipt step (Settings say: ask each time).
+  assert.match($('.rcpan h2').textContent, /Payment 1001 saved/); checkTags('receipt step');
+  assert.equal($('#rc-go').textContent, 'Print and email');
+  $('#rc-print').checked = false; $('#rc-print').dispatchEvent(new dom.window.Event('change'));
+  assert.equal($('#rc-go').textContent, 'Email');
+  $('#rc-go').click(); await tick(12);
+  assert.ok(!$('.rcpan'), 'the receipt step closes');
+  assert.equal(db.S.mail.find((m) => m.kind === 'receipt').to, 'orders@mfs.example');
+  // Who owes me is the first tab.
+  assert.ok($('[data-pmtab="owes"].on')); checkTags('who owes me');
+  assert.match($('#ow-rows').textContent, /No stores here/, 'nobody owes anything now');
+  $('[data-owf="credit"]').click(); await tick();
+  assert.match($('#ow-rows').textContent, /Maynardville Fuel Stop[\s\S]*-\$20\.00[\s\S]*\$20\.00 credit/);
+  $('[data-pmtab="list"]').click(); await tick(10);
   assert.match($('#pm-rows').textContent, /Maynardville Fuel Stop[\s\S]*Cash[\s\S]*Pays Starting balance, #1001 · \$20\.00 store credit[\s\S]*\$160\.00/);
 
   // Post-dated check: waits, then deposited.
@@ -55,6 +69,7 @@ test('Payments: take one, oldest first, store credit, post-dated, deposit, void,
   assert.match($('#pm-sum').textContent, /Post-dated check/);
   $('#pm-save').click(); await tick(10);
   assert.match($('.toast').textContent, /post-dated, waiting/);
+  $('#rc-skip').click(); await tick();
   $('[data-pmtab="held"]').click(); await tick(); checkTags('post-dated');
   assert.match($('#app').textContent, /4471[\s\S]*Waits/);
   db.S.payments.find((p) => p.check_no === '4471').check_date = '2000-01-01';
@@ -114,6 +129,7 @@ test('Payments: take one, oldest first, store credit, post-dated, deposit, void,
   assert.match($('.pmpan h2').textContent, /invoice 1002/);
   assert.equal($('#pm-amt').value, '30.00');
   $('#pm-save').click(); await tick(10);
+  $('#rc-skip').click(); await tick(10);
   const p = db.S.payments.find((x) => x.number === 1003);
   assert.equal(p.amount, 30); assert.ok(p.sale_id);
   assert.ok(db.S.applies.some((a) => a.from_pay === p.id && a.amount === 30));
@@ -123,4 +139,52 @@ test('Payments: take one, oldest first, store credit, post-dated, deposit, void,
   assert.match($('.hneed').textContent, /\$30\.00 in cash and checks not deposited/);
   $('[data-guide="home-needs-bank"]').click(); await tick(10);
   assert.ok($('[data-pmtab="bank"].on'), 'opens Take to the bank');
+});
+
+test('Who owes me, email statements, Settings → Statements & receipts, a store that wants no receipt', async () => {
+  const db = makeFake({ signedIn: 'owner@example.com' });
+  const c = await db.createCompany({ name: 'Knox', home: 'TN', your_name: 'Sam' });
+  await db.companyPut(c.id, { email: 'office@knox.example' }).catch(() => {});
+  const a = await db.customerPut(c.id, { name: 'Clinton Mart', level: 1, opening: 120, email: 'cm@x.example' });
+  await db.customerPut(c.id, { name: 'Halls Quick Stop', level: 1, opening: 60 });
+  await db.customerPut(c.id, { name: 'Zero Market', level: 1, opening: 0, email: 'z@x.example', gets: { receipt: 'none' } });
+  const A = startApp(document.getElementById('app'), db);
+  await tick();
+  $('[data-go="payments"]').click(); await tick(10);
+  assert.match($('.kpis').textContent, /Stores owe you\$180\.00/);
+  assert.equal($$('#ow-rows tr.pmr').length, 2, 'only stores that owe something');
+  assert.match($('#ow-rows').textContent, /Halls Quick Stop[\s\S]*No email/);
+  const box = $('#ow-q'); type(box, 'halls'); assert.equal($('#ow-q'), box, 'typing never redraws');
+  assert.equal($$('#ow-rows tr.pmr:not([hidden])').length, 1);
+  type(box, '');
+  $('#ow-csv').click(); assert.match(A.lastCsv, /Clinton Mart.*120/);
+  $('#ow-mail').click(); await tick(10); checkTags('email statements');
+  assert.match($('.swpan').textContent, /1 statement will go out[\s\S]*1 store has no email[\s\S]*Halls Quick Stop/);
+  assert.ok($('#sw-print'));
+  $('#sw-go').click(); await tick(12);
+  assert.match($('.toast').textContent, /1 statement emailed · 1 with no email/);
+  assert.equal(db.S.mail.filter((m) => m.kind === 'statement').length, 1);
+  assert.match($('#ow-rows').textContent, /Clinton Mart[\s\S]*Emailed/);
+
+  // Settings → Statements & receipts
+  $('[data-go="settings"]').click(); await tick(); $('[data-stab="statements"]').click(); await tick(); checkTags('statements settings');
+  assert.ok($('#st-bar').classList.contains('hide'));
+  const au = $('[data-sts="auto"]'); au.checked = true; au.dispatchEvent(new dom.window.Event('change'));
+  pick('[data-sts="day"]', '3'); pick('[data-sts="after"]', 'print');
+  type('[data-sts="note"]', 'Please pay by the 15th');
+  assert.ok(!$('#st-bar').classList.contains('hide'), 'Not saved yet shows');
+  $('#st-save').click(); await tick(10);
+  const s = db.S.companies[0].settings;
+  assert.equal(s.stmt.auto, true); assert.equal(s.stmt.day, 3); assert.equal(s.stmt.note, 'Please pay by the 15th'); assert.equal(s.rcpt.after, 'print');
+  assert.match($('#st-next').textContent, /Next:/);
+
+  // A store set to no receipt: no receipt step, nothing printed or emailed.
+  $('[data-go="payments"]').click(); await tick(10); $('#pm-new').click(); await tick();
+  type('#pm-cq', 'zero'); key('#pm-cq', 'Enter'); await tick(10); type('#pm-amt', '10'); $('#pm-save').click(); await tick(12);
+  assert.ok(!$('.rcpan')); assert.ok(!db.S.mail.some((m) => m.kind === 'receipt'));
+  // Settings say print: printed by itself, written down on the payment.
+  $('#pm-new').click(); await tick(); type('#pm-cq', 'clinton'); key('#pm-cq', 'Enter'); await tick(10); type('#pm-amt', '20'); $('#pm-save').click(); await tick(14);
+  assert.ok(!$('.rcpan'));
+  assert.match(document.getElementById('printout').textContent, /PAYMENT RECEIPT[\s\S]*Clinton Mart[\s\S]*You owe now\$100\.00/);
+  assert.equal(db.S.payments.find((p) => p.amount === 20).sends[0].kind, 'print');
 });

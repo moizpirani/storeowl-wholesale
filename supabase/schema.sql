@@ -2224,3 +2224,269 @@ end $$;
 revoke execute on function _bank_ok(payments), _dep_json(uuid) from public, anon, authenticated;
 revoke execute on function bank_todo(uuid), deposit_make(uuid,jsonb), deposits_list(uuid,date,date), deposit_set(uuid,uuid,jsonb), payment_returned(uuid,uuid,text) from public, anon;
 grant execute on function bank_todo(uuid), deposit_make(uuid,jsonb), deposits_list(uuid,date,date), deposit_set(uuid,uuid,jsonb), payment_returned(uuid,uuid,text) to authenticated;
+
+-- =====================================================================
+-- Phase 3, part 3: Who owes me, email all statements, monthly statements by themselves, payment receipts (2026-11-27)
+-- Settings: stmt {auto, day 1|2|3|5, who owe|all, copy, note, last 'YYYY-MM', lastrun} (owners only),
+--           rcpt {after ask|print|email|both|none}; a store can have its own receipt choice (customers.gets.receipt).
+-- Monthly statements: a daily job (pg_cron, where the database has it) posts {job:'statements', key} to the website,
+-- which asks stmt_auto_due(key) for the companies whose day has come and emails last month's statements.
+-- =====================================================================
+create or replace function company_settings_set(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare s jsonb := '{}'::jsonb; before jsonb; st text; ks jsonb; r text := _need(p_company, 'manager');
+begin
+  select settings into before from companies where id = p_company;
+  if p ? 'lic_mode' then
+    if p->>'lic_mode' not in ('warn','ask','off') then raise exception 'pick only warn, ask for a manager''s OK, or don''t warn at the Counter'; end if;
+    if p->>'lic_mode' = 'off' and r <> 'owner' then raise exception 'only owners can turn off the warning at the Counter'; end if;
+    s := s || jsonb_build_object('lic_mode', p->>'lic_mode'); end if;
+  if p ? 'lic_need' then
+    if jsonb_typeof(p->'lic_need') <> 'object' then raise exception 'pick licenses for each state'; end if;
+    for st, ks in select * from jsonb_each(p->'lic_need') loop
+      if not exists (select 1 from company_states where company_id = p_company and state = st) then raise exception 'you don''t sell in %', st; end if;
+      if jsonb_typeof(ks) <> 'array' or exists (select 1 from jsonb_array_elements_text(ks) k where k not in ('resale','location','tobacco','vapor','hemp','beer'))
+        then raise exception 'pick licenses from the list'; end if;
+    end loop;
+    s := s || jsonb_build_object('lic_need', p->'lic_need'); end if;
+  if p ? 'remind_days' then
+    if (p->>'remind_days')::int not between 0 and 120 then raise exception 'reminders can be 0 to 120 days ahead'; end if;
+    s := s || jsonb_build_object('remind_days', (p->>'remind_days')::int); end if;
+  if p ? 'default_level' then
+    if not exists (select 1 from price_levels where company_id = p_company and n = (p->>'default_level')::int) then raise exception 'pick a price level'; end if;
+    s := s || jsonb_build_object('default_level', (p->>'default_level')::int); end if;
+  if p ? 'inv' then
+    if jsonb_typeof(p->'inv') <> 'object' then raise exception 'invoice settings look wrong'; end if;
+    if length(coalesce(p->'inv'->>'lic','')) > 600 or length(coalesce(p->'inv'->>'footer','')) > 600 or length(coalesce(p->'inv'->>'tax_text','')) > 120
+      then raise exception 'that text is too long for the invoice'; end if;
+    if coalesce((p->'inv'->>'copies')::int, 1) not between 1 and 5 then raise exception 'print 1 to 5 copies'; end if;
+    s := s || jsonb_build_object('inv', (select jsonb_object_agg(k, v) from jsonb_each(p->'inv') x(k, v)
+      where k in ('lic','msa','photos','barcodes','owes','sign','tax_line','tax_text','footer','after','copies'))); end if;
+  if p ? 'stmt' then
+    if r <> 'owner' then raise exception 'only owners can change monthly statements'; end if;
+    if jsonb_typeof(p->'stmt') <> 'object' then raise exception 'statement settings look wrong'; end if;
+    if coalesce((p->'stmt'->>'day')::int, 1) not in (1,2,3,5) then raise exception 'send on the 1st, 2nd, 3rd or 5th'; end if;
+    if coalesce(p->'stmt'->>'who','owe') not in ('owe','all') then raise exception 'pick who gets statements'; end if;
+    if length(coalesce(p->'stmt'->>'note','')) > 300 then raise exception 'the note is too long'; end if;
+    s := s || jsonb_build_object('stmt', coalesce(before->'stmt','{}'::jsonb) || (select jsonb_object_agg(k, v) from jsonb_each(p->'stmt') x(k, v) where k in ('auto','day','who','copy','note'))); end if;
+  if p ? 'rcpt' then
+    if coalesce(p->'rcpt'->>'after','print') not in ('ask','print','email','both','none') then raise exception 'pick what happens after a payment'; end if;
+    s := s || jsonb_build_object('rcpt', jsonb_build_object('after', coalesce(p->'rcpt'->>'after','print'))); end if;
+  update companies set settings = settings || s where id = p_company;
+  perform _log(p_company, 'settings changed', jsonb_build_object('before', before, 'after', s));
+  return _company_json(p_company);
+end $$;
+
+create or replace function customer_put(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare cid uuid := nullif(p->>'id','')::uuid; before jsonb; e text; e2 text; lv int; isnew boolean := cid is null;
+begin
+  perform _need(p_company, 'manager');
+  perform _levels_ensure(p_company);
+  if (isnew or p ? 'name') and length(trim(coalesce(p->>'name',''))) = 0 then raise exception 'type the customer''s name'; end if;
+  e := lower(trim(coalesce(p->>'email','')));
+  if e <> '' and e !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'the email doesn''t look right'; end if;
+  e2 := lower(trim(coalesce(p->>'edi_email','')));
+  if e2 <> '' and e2 !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'the EDI email doesn''t look right'; end if;
+  if regexp_replace(coalesce(p->>'acct_no',''), '\s', '', 'g') !~ '^[0-9]{0,6}$' then raise exception 'the customer # for the EDI file is numbers only, at most 6'; end if;
+  if p ? 'level' then lv := (p->>'level')::int;
+    if not exists (select 1 from price_levels where company_id = p_company and n = lv) then raise exception 'pick a price level'; end if; end if;
+  if _num(p->'credit_limit') < 0 then raise exception 'the credit limit can''t be below zero'; end if;
+  if isnew then
+    insert into customers(company_id, name, level) values (p_company, trim(p->>'name'),
+      coalesce(lv, (select (settings->>'default_level')::int from companies where id = p_company), (select min(n) from price_levels where company_id = p_company)))
+      returning id into cid;
+  else
+    if not exists (select 1 from customers where id = cid and company_id = p_company) then raise exception 'customer not found'; end if;
+    before := _cust_json(cid) - 'licenses';
+  end if;
+  update customers set
+    name = case when p ? 'name' then trim(p->>'name') else name end,
+    store_no = case when p ? 'store_no' then trim(coalesce(p->>'store_no','')) else store_no end,
+    phone = case when p ? 'phone' then trim(coalesce(p->>'phone','')) else phone end,
+    email = case when p ? 'email' then e else email end,
+    addr = case when p ? 'addr' then trim(coalesce(p->>'addr','')) else addr end,
+    city = case when p ? 'city' then trim(coalesce(p->>'city','')) else city end,
+    state = case when p ? 'state' then coalesce(_clean_state(p->>'state'),'') else state end,
+    zip = case when p ? 'zip' then trim(coalesce(p->>'zip','')) else zip end,
+    contacts = case when p ? 'contacts' then coalesce((select jsonb_agg(jsonb_build_object('name', trim(coalesce(x->>'name','')), 'role', trim(coalesce(x->>'role','')), 'phone', trim(coalesce(x->>'phone',''))))
+      from jsonb_array_elements(p->'contacts') x where trim(coalesce(x->>'name','') || coalesce(x->>'phone','')) <> ''), '[]'::jsonb) else contacts end,
+    level = coalesce(lv, level),
+    terms = case when p ? 'terms' then p->>'terms' else terms end,
+    credit_limit = case when p ? 'credit_limit' then _num(p->'credit_limit') else credit_limit end,
+    tobacco = case when p ? 'tobacco' then (p->>'tobacco')::boolean else tobacco end,
+    delivery = case when p ? 'delivery' then trim(coalesce(p->>'delivery','')) else delivery end,
+    route = case when p ? 'route' then trim(coalesce(p->>'route','')) else route end,
+    rep = case when p ? 'rep' then trim(coalesce(p->>'rep','')) else rep end,
+    ship_to = case when p ? 'ship_to' then trim(coalesce(p->>'ship_to','')) else ship_to end,
+    edi_email = case when p ? 'edi_email' then e2 else edi_email end,
+    acct_no = case when p ? 'acct_no' then regexp_replace(coalesce(p->>'acct_no',''), '\s', '', 'g') else acct_no end,
+    gets = case when p ? 'gets' then coalesce((select jsonb_object_agg(k, (v)::boolean) from jsonb_each_text(p->'gets') x(k, v) where k in ('print','email','edi') and v in ('true','false')), '{}'::jsonb)
+      || case when p->'gets'->>'receipt' in ('print','email','both','none') then jsonb_build_object('receipt', p->'gets'->>'receipt') else '{}'::jsonb end else gets end,
+    since = case when p ? 'since' then nullif(p->>'since','')::date else since end,
+    active = case when p ? 'active' then (p->>'active')::boolean else active end,
+    updated_at = now()
+  where id = cid;
+  perform _opening_put(p_company, cid, p);
+  perform _log(p_company, case when isnew then 'customer added' else 'customer changed' end,
+    jsonb_build_object('customer', cid, 'name', (select name from customers where id = cid), 'before', before));
+  return customer_get(p_company, cid);
+end $$;
+
+alter table payments add column if not exists sends jsonb not null default '[]'::jsonb;
+
+-- One customer's Invoices & payments between two dates (no permission check: callers check).
+create or replace function _acct_json(p_customer uuid, p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c customers; bef numeric; rows jsonb; pays jsonb;
+begin
+  select * into c from customers where id = p_customer;
+  select coalesce(c.opening, 0) + coalesce(sum(total), 0) into bef from sales where customer_id = c.id and status = 'posted' and invoice_date < p_from;
+  bef := bef - coalesce((select sum(amount) from payments where customer_id = c.id and status = 'posted' and received < p_from), 0);
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'kind', kind, 'status', status, 'number', number, 'date', invoice_date, 'total', total,
+      'units', units, 'lines', jsonb_array_length(lines), 'by', posted_by, 'void_at', void_at, 'void_by', void_by, 'void_why', void_why)
+      order by invoice_date, number), '[]'::jsonb) into rows
+    from sales where customer_id = c.id and status in ('posted','void') and invoice_date between p_from and p_to;
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'kind', 'payment', 'status', status, 'number', number, 'date', received, 'total', -amount,
+      'method', method, 'check_no', check_no, 'check_date', check_date, 'by', by_name, 'void_at', void_at, 'void_by', void_by, 'void_why', void_why, 'note', note)
+      order by received, number), '[]'::jsonb) into pays
+    from payments where customer_id = c.id and received between p_from and p_to;
+  return jsonb_build_object('before', round(bef, 2), 'opening', coalesce(c.opening, 0), 'rows', rows, 'payments', pays, 'open', _open_items(c.id, current_date));
+end $$;
+
+create or replace function customer_account(p_company uuid, p_customer uuid, p_from date, p_to date) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'pick the dates'; end if;
+  if p_to - p_from > 800 then raise exception 'pick up to two years at a time'; end if;
+  return _acct_json(p_customer, p_from, p_to);
+end $$;
+
+-- Who owes me: every store with what it owes, split by how late, its last payment and last statement.
+create or replace function owes_list(p_company uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c customers; o jsonb; owes numeric; rows jsonb := '[]'::jsonb;
+begin
+  perform _need(p_company, 'staff');
+  for c in select * from customers where company_id = p_company and active order by name loop
+    o := _open_items(c.id, current_date);
+    owes := round(c.opening + coalesce((select sum(total) from sales where customer_id = c.id and status = 'posted'), 0)
+      - coalesce((select sum(amount) from payments where customer_id = c.id and status = 'posted'), 0), 2);
+    rows := rows || jsonb_build_array(jsonb_build_object('id', c.id, 'name', c.name, 'store_no', c.store_no, 'city', c.city, 'terms', c.terms,
+      'email', c.email, 'owes', owes, 'aging', o->'aging', 'past_due', o->'past_due', 'store_credit', o->'store_credit', 'held', o->'held',
+      'last_pay', (select jsonb_build_object('date', received, 'amount', amount) from payments where customer_id = c.id and status = 'posted' order by received desc, number desc limit 1),
+      'last_stmt', (select jsonb_build_object('at', at, 'ok', what = 'statement emailed') from change_log
+        where company_id = p_company and what in ('statement emailed','statement email failed') and detail->>'customer' = c.id::text order by at desc limit 1)));
+  end loop;
+  return rows;
+end $$;
+
+-- Statements for many stores at once: who = 'owe' (owes something now) or 'all' (owes or had activity in the dates).
+create or replace function _stmt_rows(p_company uuid, p_from date, p_to date, p_who text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c customers; a jsonb; owes numeric; rows jsonb := '[]'::jsonb;
+begin
+  for c in select * from customers where company_id = p_company and active order by name loop
+    owes := round(c.opening + coalesce((select sum(total) from sales where customer_id = c.id and status = 'posted'), 0)
+      - coalesce((select sum(amount) from payments where customer_id = c.id and status = 'posted'), 0), 2);
+    if p_who = 'owe' and owes <= 0.004 then continue; end if;
+    a := _acct_json(c.id, p_from, p_to);
+    if p_who = 'all' and abs(owes) <= 0.004 and jsonb_array_length(a->'rows') = 0 and jsonb_array_length(a->'payments') = 0 then continue; end if;
+    rows := rows || jsonb_build_array(jsonb_build_object('cust', _cust_json(c.id), 'acct', a));
+  end loop;
+  return rows;
+end $$;
+
+create or replace function stmt_batch(p_company uuid, p_from date, p_to date, p_who text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'manager');
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'pick the dates'; end if;
+  if p_to - p_from > 800 then raise exception 'pick up to two years at a time'; end if;
+  if coalesce(p_who,'') not in ('owe','all') then raise exception 'pick who gets statements'; end if;
+  return jsonb_build_object('company', _company_json(p_company), 'rows', _stmt_rows(p_company, p_from, p_to, p_who));
+end $$;
+
+-- ----- monthly statements by themselves -----
+create table if not exists job_keys (name text primary key, key text not null, url text not null default '');
+alter table job_keys enable row level security;
+revoke all on job_keys from anon, authenticated;
+insert into job_keys(name, key) values ('cron', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')) on conflict do nothing;
+
+create or replace function _ny_today() returns date language sql stable as $$ select (now() at time zone 'America/New_York')::date $$;
+
+-- The website relays the database's own key; the database says which companies' day has come and claims them.
+create or replace function stmt_auto_due(p_key text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare t date := _ny_today(); f date := (date_trunc('month', _ny_today()) - interval '1 month')::date; l date := (date_trunc('month', _ny_today()) - interval '1 day')::date;
+  co record; out jsonb := '[]'::jsonb; st jsonb;
+begin
+  if p_key is null or not exists (select 1 from job_keys where name = 'cron' and key = p_key) then raise exception 'not allowed'; end if;
+  for co in select * from companies where coalesce(settings->'stmt'->>'auto','false') = 'true'
+      and extract(day from t) >= coalesce((settings->'stmt'->>'day')::int, 1)
+      and coalesce(settings->'stmt'->>'last','') <> to_char(t, 'YYYY-MM') for update loop
+    st := co.settings->'stmt';
+    update companies set settings = jsonb_set(settings, '{stmt,last}', to_jsonb(to_char(t, 'YYYY-MM'))) where id = co.id;
+    out := out || jsonb_build_array(jsonb_build_object('company', _company_json(co.id), 'from', f, 'to', l, 'copy', coalesce((st->>'copy')::boolean, false),
+      'note', coalesce(st->>'note',''), 'rows', _stmt_rows(co.id, f, l, coalesce(st->>'who','owe'))));
+  end loop;
+  return out;
+end $$;
+
+-- What the monthly run sent: each store's line in History, and the totals for Settings.
+create or replace function stmt_auto_done(p_key text, p_company uuid, p jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare x jsonb;
+begin
+  if p_key is null or not exists (select 1 from job_keys where name = 'cron' and key = p_key) then raise exception 'not allowed'; end if;
+  for x in select * from jsonb_array_elements(coalesce(p->'sent','[]'::jsonb)) loop
+    insert into change_log(company_id, by_user, by_name, what, detail) values (p_company, null, 'StoreOwl (monthly statements)',
+      case when coalesce((x->>'ok')::boolean, false) then 'statement emailed' else 'statement email failed' end,
+      jsonb_build_object('customer', x->>'customer', 'to', x->>'to', 'from', p->>'from', 'upto', p->>'to', 'err', nullif(x->>'err',''), 'auto', true));
+  end loop;
+  update companies set settings = jsonb_set(settings, '{stmt,lastrun}', jsonb_build_object('at', now(), 'sent', (select count(*) from jsonb_array_elements(coalesce(p->'sent','[]'::jsonb)) y where (y->>'ok')::boolean),
+    'noemail', (select count(*) from jsonb_array_elements(coalesce(p->'sent','[]'::jsonb)) y where coalesce(y->>'to','') = ''),
+    'failed', (select count(*) from jsonb_array_elements(coalesce(p->'sent','[]'::jsonb)) y where not coalesce((y->>'ok')::boolean, false) and coalesce(y->>'to','') <> '')))
+    where id = p_company;
+end $$;
+
+-- ----- payment receipts -----
+create or replace function payment_receipt(p_company uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x payments;
+begin
+  perform _need(p_company, 'staff');
+  select * into x from payments where id = p_id and company_id = p_company;
+  if x.id is null then raise exception 'payment not found'; end if;
+  return jsonb_build_object('pay', _pay_json(x.id), 'customer', _cust_json(x.customer_id), 'company', _company_json(p_company));
+end $$;
+
+create or replace function receipt_sent(p_company uuid, p_id uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from payments where id = p_id and company_id = p_company) then raise exception 'payment not found'; end if;
+  update payments set sends = sends || jsonb_build_array(jsonb_build_object('kind', coalesce(p->>'kind','email'), 'to', p->>'to', 'ok', coalesce((p->>'ok')::boolean, true),
+    'err', nullif(p->>'err',''), 'at', now(), 'by', who)) where id = p_id;
+  perform _log(p_company, case when coalesce((p->>'ok')::boolean, true) then 'receipt sent' else 'receipt email failed' end,
+    jsonb_build_object('payment', p_id, 'kind', p->>'kind', 'to', p->>'to', 'err', nullif(p->>'err','')));
+  return _pay_json(p_id);
+end $$;
+
+revoke execute on function _acct_json(uuid,date,date), _stmt_rows(uuid,date,date,text) from public, anon, authenticated;
+revoke execute on function owes_list(uuid), stmt_batch(uuid,date,date,text), payment_receipt(uuid,uuid), receipt_sent(uuid,uuid,jsonb) from public, anon;
+grant execute on function owes_list(uuid), stmt_batch(uuid,date,date,text), payment_receipt(uuid,uuid), receipt_sent(uuid,uuid,jsonb) to authenticated;
+revoke execute on function stmt_auto_due(text), stmt_auto_done(text,uuid,jsonb) from public;
+grant execute on function stmt_auto_due(text), stmt_auto_done(text,uuid,jsonb) to anon, authenticated;
+
+-- The daily job (only where the database has pg_cron and pg_net, and job_keys.url is set to the app's address).
+do $do$ begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') and exists (select 1 from pg_extension where extname = 'pg_net') then
+    perform cron.schedule('storeowl-statements', '0 13 * * *', $c$
+      select net.http_post(url := k.url || '/api/send', body := jsonb_build_object('job', 'statements', 'key', k.key),
+        headers := '{"Content-Type":"application/json"}'::jsonb, timeout_milliseconds := 60000) from job_keys k where k.name = 'cron' and k.url <> '' $c$);
+  end if;
+end $do$;

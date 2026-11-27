@@ -9,6 +9,7 @@ import nodemailer from 'nodemailer';
 import { invModel, invoicePdf, pdfName, ediFile, ediName, ediSubject, ediBlocked, invEmail, invEmailText } from '../src/invoice.js';
 import { todayIso } from '../src/rules.js';
 import { stmtModel, stmtPdf, stmtName, stmtEmailText } from '../src/statement.js';
+import { receiptModel, receiptPdf, receiptName, receiptEmailText } from '../src/receipt.js';
 
 const env = (k) => (process.env[k] || '').trim();
 
@@ -44,9 +45,12 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Use POST.' });
   const tok = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   const url = env('SUPABASE_URL') || env('VITE_SUPABASE_URL'), key = env('SUPABASE_ANON_KEY') || env('VITE_SUPABASE_ANON_KEY');
-  if (!tok || !url || !key) return res.status(401).json({ error: 'Sign in again to send it.' });
   const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  if (b.job === 'statements') return monthlyStatements(req, res, b, url, key);
+  if (!tok || !url || !key) return res.status(401).json({ error: 'Sign in again to send it.' });
   if (b.statement) return sendStatement(req, res, b, tok, url, key);
+  if (b.statements) return sendStatements(req, res, b, tok, url, key);
+  if (b.receipt) return sendReceipt(req, res, b, tok, url, key);
   const what = { email: !!(b.what && b.what.email), edi: !!(b.what && b.what.edi) };
   if (!b.company || !b.sale || !(what.email || what.edi)) return res.status(400).json({ error: 'Pick what to send.' });
   const sb = createClient(url, key, { global: { headers: { Authorization: 'Bearer ' + tok } }, auth: { persistSession: false } });
@@ -67,12 +71,85 @@ export default async function handler(req, res) {
 }
 
 // A store's statement as a PDF. POST {company, statement: {customer, from, to}}; the database checks the person can see it.
-export function buildStatementMail(co, cust, acct, from, to) {
-  const M = stmtModel({ co, cust, acct, from, to, today: todayIso() }), t = stmtEmailText(M, co);
+export function buildStatementMail(co, cust, acct, from, to, note, bcc) {
+  const M = stmtModel({ co, cust, acct, from, to, today: todayIso(), note }), t = stmtEmailText(M, co);
   const mailTo = invEmail(cust);
   if (!mailTo) return { to: '', err: 'This store has no email.' };
   return { to: mailTo, mail: { from: '"' + clean(co.name) + '" <' + (env('MAIL_FROM') || 'invoices@storeowl.app') + '>', replyTo: (co.email || '').trim() || undefined, to: mailTo,
-    subject: t.subject, text: t.text, attachments: [{ filename: stmtName(M), content: Buffer.from(stmtPdf(M).bytes), contentType: 'application/pdf' }] } };
+    bcc: bcc || undefined, subject: t.subject, text: t.text, attachments: [{ filename: stmtName(M), content: Buffer.from(stmtPdf(M).bytes), contentType: 'application/pdf' }] } };
+}
+const clientFor = (url, key, tok) => {
+  const sb = createClient(url, key, { global: tok ? { headers: { Authorization: 'Bearer ' + tok } } : {}, auth: { persistSession: false } });
+  return async (n, a) => { const { data, error } = await sb.rpc(n, a); if (error) throw new Error(error.message); return data; };
+};
+async function mailOne(t, m) {
+  let ok = !m.err, err = m.err || '';
+  if (ok) { try { await t.sendMail(m.mail); } catch (e) { ok = false; err = String(e.message || e).slice(0, 200); } }
+  return { ok, err };
+}
+
+// Email statements to many stores at once. POST {company, statements: {from, to, who: owe|all, copy, note}} (managers).
+async function sendStatements(req, res, b, tok, url, key) {
+  const st = b.statements || {};
+  if (!b.company || !st.from || !st.to) return res.status(400).json({ error: 'Pick the dates.' });
+  const rpc = clientFor(url, key, tok);
+  let d;
+  try { d = await rpc('stmt_batch', { p_company: b.company, p_from: st.from, p_to: st.to, p_who: st.who === 'all' ? 'all' : 'owe' }); } catch (e) { return res.status(403).json({ error: e.message }); }
+  const t = mailer();
+  if (!t) return res.status(503).json({ error: 'Emails aren’t set up yet (StoreOwl needs to add the email sender).' });
+  const co = d.company, bcc = st.copy ? (co.email || '').trim() : '';
+  const out = { sent: 0, failed: [], noEmail: [] };
+  for (const r of d.rows || []) {
+    const m = buildStatementMail(co, r.cust, r.acct, st.from, st.to, st.note, bcc);
+    if (!m.to) { out.noEmail.push({ id: r.cust.id, name: r.cust.name }); continue; }
+    const x = await mailOne(t, m);
+    if (x.ok) out.sent++; else out.failed.push({ id: r.cust.id, name: r.cust.name, err: x.err });
+    try { await rpc('statement_sent', { p_company: b.company, p_customer: r.cust.id, p: { to: m.to, from: st.from, upto: st.to, ok: x.ok, err: x.err } }); } catch (e) { /* sent anyway */ }
+  }
+  return res.status(200).json(out);
+}
+
+// The monthly run: the database posts {job: 'statements', key}. The key goes straight back to the database, which checks it.
+async function monthlyStatements(req, res, b, url, key) {
+  if (!url || !key || !b.key) return res.status(401).json({ error: 'no key' });
+  const rpc = clientFor(url, key, '');
+  let due;
+  try { due = await rpc('stmt_auto_due', { p_key: String(b.key) }); } catch (e) { return res.status(403).json({ error: e.message }); }
+  const t = mailer();
+  if (!t) return res.status(503).json({ error: 'no email sender' });
+  let n = 0;
+  for (const job of due || []) {
+    const co = job.company, bcc = job.copy ? (co.email || '').trim() : '', sent = [];
+    for (const r of job.rows || []) {
+      const m = buildStatementMail(co, r.cust, r.acct, job.from, job.to, job.note, bcc);
+      if (!m.to) { sent.push({ customer: r.cust.id, to: '', ok: false, err: 'no email' }); continue; }
+      const x = await mailOne(t, m); n += x.ok ? 1 : 0;
+      sent.push({ customer: r.cust.id, to: m.to, ok: x.ok, err: x.err });
+    }
+    try { await rpc('stmt_auto_done', { p_key: String(b.key), p_company: co.id, p: { from: job.from, to: job.to, sent } }); } catch (e) { /* logged next time */ }
+  }
+  return res.status(200).json({ companies: (due || []).length, sent: n });
+}
+
+// A payment receipt as a PDF. POST {company, receipt: payment id}.
+export function buildReceiptMail(d) {
+  const M = receiptModel({ co: d.company, pay: d.pay, cust: d.customer }), t = receiptEmailText(M, d.company);
+  const to = invEmail(d.customer);
+  if (!to) return { to: '', err: 'This store has no email.' };
+  return { to, mail: { from: '"' + clean(d.company.name) + '" <' + (env('MAIL_FROM') || 'invoices@storeowl.app') + '>', replyTo: (d.company.email || '').trim() || undefined, to,
+    subject: t.subject, text: t.text, attachments: [{ filename: receiptName(M), content: Buffer.from(receiptPdf(M).bytes), contentType: 'application/pdf' }] } };
+}
+async function sendReceipt(req, res, b, tok, url, key) {
+  if (!b.company) return res.status(400).json({ error: 'Pick the payment.' });
+  const rpc = clientFor(url, key, tok);
+  let d;
+  try { d = await rpc('payment_receipt', { p_company: b.company, p_id: b.receipt }); } catch (e) { return res.status(403).json({ error: e.message }); }
+  const t = mailer();
+  if (!t) return res.status(503).json({ error: 'Emails aren’t set up yet (StoreOwl needs to add the email sender).' });
+  const m = buildReceiptMail(d), x = await mailOne(t, m);
+  let pay = d.pay;
+  try { pay = await rpc('receipt_sent', { p_company: b.company, p_id: b.receipt, p: { kind: 'email', to: m.to, ok: x.ok, err: x.err } }); } catch (e) { /* sent anyway */ }
+  return res.status(x.ok ? 200 : 400).json(x.ok ? { to: m.to, pay } : { error: x.err, pay });
 }
 async function sendStatement(req, res, b, tok, url, key) {
   const st = b.statement || {};

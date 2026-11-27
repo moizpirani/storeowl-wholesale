@@ -110,18 +110,26 @@ export function makeDb(sb) {
       if (!r.ok) throw new Error(j.error || 'The email couldn’t be sent. Try again.');
       return j;
     },
-    async sendStatement(id, customer, from, to) {
-      const { data } = await sb.auth.getSession();
-      const tok = data.session && data.session.access_token;
-      if (!tok) throw new Error('Sign in again to send it.');
-      let r;
-      try { r = await fetch('/api/send', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok }, body: JSON.stringify({ company: id, statement: { customer, from, to } }) }); }
-      catch (e) { throw new Error(plain(e.message)); }
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j.error || 'The email couldn’t be sent. Try again.');
-      return j;
-    }
+    async sendStatement(id, customer, from, to) { return post({ company: id, statement: { customer, from, to } }); },
+    // Phase 3, part 3: who owes me, many statements at once, payment receipts.
+    owesList: (id) => rpc('owes_list', { p_company: id }),
+    stmtBatch: (id, from, to, who) => rpc('stmt_batch', { p_company: id, p_from: from, p_to: to, p_who: who }),
+    sendStatements(id, o) { return post({ company: id, statements: o }); },
+    paymentReceipt: (id, pay) => rpc('payment_receipt', { p_company: id, p_id: pay }),
+    receiptSent: (id, pay, p) => rpc('receipt_sent', { p_company: id, p_id: pay, p }),
+    sendReceipt(id, pay) { return post({ company: id, receipt: pay }); }
   };
+  async function post(body) {
+    const { data } = await sb.auth.getSession();
+    const tok = data.session && data.session.access_token;
+    if (!tok) throw new Error('Sign in again to send it.');
+    let r;
+    try { r = await fetch('/api/send', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok }, body: JSON.stringify(body) }); }
+    catch (e) { throw new Error(plain(e.message)); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'The email couldn’t be sent. Try again.');
+    return j;
+  }
 }
 
 // Database messages in plain words.
@@ -324,6 +332,15 @@ export function makeFake(opts) {
         }
       }
       if ('inv' in p && (+(p.inv || {}).copies || 1) > 5) throw new Error('Print 1 to 5 copies');
+      if ('stmt' in p) {
+        if (me2.role !== 'owner') throw new Error('Only owners can change monthly statements');
+        const q = p.stmt || {};
+        if ('day' in q && ![1, 2, 3, 5].includes(+q.day)) throw new Error('Pick the 1st, 2nd, 3rd or 5th');
+        if ('who' in q && !['owe', 'all'].includes(q.who)) throw new Error('Pick who gets statements');
+        if (String(q.note || '').length > 300) throw new Error('The note is too long (300 letters at most)');
+        p = Object.assign({}, p, { stmt: Object.assign({}, (c.settings || {}).stmt, q) });
+      }
+      if ('rcpt' in p) { const a = (p.rcpt || {}).after; if (!['ask', 'print', 'email', 'both', 'none'].includes(a)) throw new Error('Pick what happens after a payment'); }
       c.settings = Object.assign({}, c.settings, p);
       log(cid, 'settings changed', { after: p });
       return cj(c);
@@ -396,7 +413,8 @@ export function makeFake(opts) {
       if ('email' in p) c.email = String(p.email || '').trim().toLowerCase();
       if ('edi_email' in p) { const e = String(p.edi_email || '').trim().toLowerCase(); if (e && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw new Error('The EDI email doesn’t look right'); c.edi_email = e; }
       if ('acct_no' in p) { const a = String(p.acct_no || '').replace(/\s/g, ''); if (!/^\d{0,6}$/.test(a)) throw new Error('The customer # for the EDI file is numbers only, at most 6'); c.acct_no = a; }
-      if ('gets' in p) { c.gets = {}; ['print', 'email', 'edi'].forEach((k) => { if (p.gets && typeof p.gets[k] === 'boolean') c.gets[k] = p.gets[k]; }); }
+      if ('gets' in p) { c.gets = {}; ['print', 'email', 'edi'].forEach((k) => { if (p.gets && typeof p.gets[k] === 'boolean') c.gets[k] = p.gets[k]; });
+        if (p.gets && ['print', 'email', 'both', 'none'].includes(p.gets.receipt)) c.gets.receipt = p.gets.receipt; }
       if ('contacts' in p) c.contacts = (p.contacts || []).filter((x) => (x.name || x.phone || '').trim()).map((x) => ({ name: (x.name || '').trim(), role: (x.role || '').trim(), phone: (x.phone || '').trim() }));
       if ('level' in p) c.level = +p.level;
       ['terms', 'tobacco', 'active'].forEach((k) => { if (k in p) c[k] = p[k]; });
@@ -723,6 +741,56 @@ export function makeFake(opts) {
       (S.mail = S.mail || []).push({ kind: 'statement', to: em, customer, from, upto: to });
       log(cid, 'statement emailed', { customer, to: em, from, upto: to });
       return { to: em };
+    },
+    async owesList(cid) {
+      need(cid, 'staff');
+      return S.customers.filter((c) => c.company_id === cid && c.active).sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1)).map((c) => {
+        const o = custOut(c), op = openOf(c);
+        const lp = S.payments.filter((p) => p.customer_id === c.id && p.status === 'posted').sort((a, b) => (a.received === b.received ? b.number - a.number : a.received < b.received ? 1 : -1))[0];
+        const ls = S.log.filter((x) => x.company_id === cid && x.detail.customer === c.id && /^statement email/.test(x.what))[0];
+        return { id: c.id, name: c.name, store_no: c.store_no, city: c.city, terms: c.terms, email: (c.inv_email || c.email || ''), owes: o.owes, aging: copy(op.aging),
+          past_due: op.past_due, store_credit: op.store_credit, held: S.payments.filter((p) => p.customer_id === c.id && p.status === 'held').reduce((a, p) => a + p.amount, 0),
+          last_pay: lp ? { date: lp.received, amount: lp.amount } : null, last_stmt: ls ? { at: ls.at, ok: ls.what === 'statement emailed' } : null };
+      });
+    },
+    async stmtBatch(cid, from, to, who) {
+      need(cid, 'manager');
+      const rows = [];
+      for (const c of S.customers.filter((x) => x.company_id === cid && x.active).sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1))) {
+        const a = await this.customerAccount(cid, c.id, from, to), owes = custOut(c).owes;
+        if (who === 'all' ? (Math.abs(owes) > 0.004 || a.rows.length || a.payments.length) : owes > 0.004) rows.push({ cust: custOut(c), acct: a });
+      }
+      return { company: cj(S.companies.find((x) => x.id === cid)), rows };
+    },
+    async sendStatements(cid, o) {
+      const d = await this.stmtBatch(cid, o.from, o.to, o.who === 'all' ? 'all' : 'owe'), out = { sent: 0, failed: [], noEmail: [] };
+      for (const r of d.rows) {
+        const em = (r.cust.inv_email || r.cust.email || '').trim();
+        if (!em) { out.noEmail.push({ id: r.cust.id, name: r.cust.name }); continue; }
+        (S.mail = S.mail || []).push({ kind: 'statement', to: em, customer: r.cust.id, from: o.from, upto: o.to, copy: !!o.copy, note: o.note || '' });
+        log(cid, 'statement emailed', { customer: r.cust.id, to: em, from: o.from, upto: o.to }); out.sent++;
+      }
+      return out;
+    },
+    async paymentReceipt(cid, pid) {
+      need(cid, 'staff');
+      const p = S.payments.find((x) => x.id === pid && x.company_id === cid);
+      if (!p) throw new Error('Payment not found');
+      return { pay: payOut(p), customer: custOut(S.customers.find((x) => x.id === p.customer_id)), company: cj(S.companies.find((x) => x.id === cid)) };
+    },
+    async receiptSent(cid, pid, q) {
+      const m = need(cid, 'staff');
+      const p = S.payments.find((x) => x.id === pid && x.company_id === cid);
+      if (!p) throw new Error('Payment not found');
+      p.sends = (p.sends || []).concat([{ kind: q.kind || 'email', to: q.to || '', ok: q.ok !== false, err: q.err || '', by: m.name || me.email, at: new Date().toISOString() }]).slice(-50);
+      log(cid, q.ok === false ? 'receipt email failed' : 'receipt sent', { payment: pid, kind: q.kind, to: q.to });
+      return payOut(p);
+    },
+    async sendReceipt(cid, pid) {
+      const d = await this.paymentReceipt(cid, pid), em = (d.customer.inv_email || d.customer.email || '').trim();
+      if (!em) throw new Error('This store has no email.');
+      (S.mail = S.mail || []).push({ kind: 'receipt', to: em, payment: pid });
+      return { to: em, pay: await this.receiptSent(cid, pid, { kind: 'email', to: em }) };
     },
     async sendInvoice(cid, sale, what) {
       const d = await this.invoiceData(cid, sale), c = d.customer, out = [];

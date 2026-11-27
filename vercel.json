@@ -1,3 +1,4 @@
 {
-  "rewrites": [{ "source": "/((?!assets/|api/|favicon|apple-touch).*)", "destination": "/index.html" }]
+  "rewrites": [{ "source": "/((?!assets/|api/|favicon|apple-touch).*)", "destination": "/index.html" }],
+  "functions": { "api/send.js": { "maxDuration": 60 } }
 }

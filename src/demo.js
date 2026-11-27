@@ -32,7 +32,18 @@ export async function seedDemo(db) {
   // Payments waiting for the bank and a deposit made earlier (pictures only; dates moved back by hand).
   if (db.S) {
     const ago = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-    const pm = async (cust, method, amount, no, days) => { const r = await db.paymentSave(c.id, { customer_id: cust.id, method, amount, check_no: no || '' }); db.S.payments.find((x) => x.id === r.id).received = ago(days); return r; };
+    // What each store owed from the old system, dated back so it ages, and a few invoices.
+    const owe = async (cust, amt, days) => { await db.customerPut(c.id, { id: cust.id, opening: amt }); Object.assign(db.S.customers.find((x) => x.id === cust.id), { opening_as_of: ago(days), created_at: ago(days) + 'T12:00:00Z' }); };
+    await owe(may, 4820.55, 9); await owe(clin, 6140.2, 40); await owe(pow, 2933.75, 75); await owe(halls, 4100.1, 20); await owe(nor, 3655, 100);
+    const sz = (await db.items(c.id)).find((x) => /Seneca Full/.test(x.name)).sizes[0].id;
+    const inv = async (cust, cartons, days) => { const r = await db.saleSave(c.id, { customer_id: cust.id, action: 'complete', lines: [{ size_id: sz, ordered: cartons, shipped: cartons }] });
+      db.S.sales.find((x) => x.id === r.id).invoice_date = ago(days); };
+    await db.customerPut(c.id, { id: clin.id, email: 'orders@clintonhwymarket.com' }); await db.customerPut(c.id, { id: nor.id, email: 'norrisshell@gmail.com' });
+    await inv(may, 30, 2); await inv(clin, 20, 5); await inv(pow, 12, 33); await inv(halls, 25, 4);
+    const pm = async (cust, method, amount, no, days) => {
+      const oi = await db.customerOpen(c.id, cust.id); let left = amount; const pay = [];
+      for (const x of oi.invoices) { if (left <= 0) break; const a = Math.min(left, x.open); pay.push({ to: x.id, amount: Math.round(a * 100) / 100 }); left -= a; }
+      const r = await db.paymentSave(c.id, { customer_id: cust.id, method, amount, check_no: no || '', pay }); db.S.payments.find((x) => x.id === r.id).received = ago(days); return r; };
     const old = [await pm(nor, 'cash', 1330, '', 12), await pm(clin, 'check', 2215.40, '3820', 12), await pm(halls, 'check', 1799.85, '10144', 12)];
     const d = await db.depositMake(c.id, { ids: old.map((x) => x.id) });
     Object.assign(db.S.deposits.find((x) => x.id === d.id), { made_on: ago(11) }); await db.depositSet(c.id, d.id, { action: 'ref', bank_ref: '88123' }); await db.depositSet(c.id, d.id, { action: 'confirm' });

@@ -541,3 +541,13 @@ h2.mt{margin-top:18px}
 .ctbar.bkbar .bkdate span{color:#cbd5e1}
 .ctbar.bkbar .btn:not(.amber){color:#0F1B2D}
 .actab td.nw{white-space:nowrap}
+/* Phase 3, part 3: Who owes me, Email statements, receipt step */
+.swpan,.rcpan{width:540px}
+.swpan .seg{display:flex;flex-wrap:wrap}.swpan .swwhen{display:block;margin-top:6px;color:#5B6676}
+.swpan .acdt{display:flex;gap:8px;align-items:center;margin-top:8px}
+.swsum{margin:14px 0 8px;font-size:15px}
+.swno{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px;padding:10px 12px;border:1px solid #F5C38B;background:#FFF7EC;border-radius:8px}
+.swno small{flex:1 1 100%;color:#5B6676}
+.rcpan .lrks{display:flex;gap:10px}.rcpan .lrk{flex:1}
+.owtab td small{display:block}
+.pmrc{margin:10px 0 0;align-items:center}

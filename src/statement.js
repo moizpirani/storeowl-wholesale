@@ -38,7 +38,7 @@ export function stmtModel(o) {
     totals: { invoices: sum('invoice'), credits: sum('credit'), payments: sum('payment') },
     aging: O.aging, past_due: O.past_due, store_credit: O.store_credit,
     open: (O.invoices || []).map((x) => ({ num: x.opening ? 'Starting balance' : String(x.number), date: x.date, due: x.due, total: x.total, open: x.open, late: x.late })),
-    note: (((co.settings || {}).inv || {}).stmt_note || '').trim()
+    note: (o.note != null && String(o.note).trim() ? String(o.note) : ((co.settings || {}).inv || {}).stmt_note || '').trim()
   };
 }
 

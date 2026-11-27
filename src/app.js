@@ -72,7 +72,8 @@ export function startApp(root, db) {
     openPayment: (id, d) => { A.view = 'payments'; pay.show(id, d); } });
   const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
   const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c), openPay: (o) => pay.open(o) });
-  const pay = makePayments({ A, db, root, esc, co, isMgr, when, render: () => render(), say: (m, b) => say(m, b), reloadCust: (id) => cat.reloadCust(id) });
+  const pay = makePayments({ A, db, root, esc, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), reloadCust: (id) => cat.reloadCust(id),
+    openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
@@ -344,7 +345,7 @@ export function startApp(root, db) {
 
   // ----- Settings: Company · States · People · History -----
   function settingsHtml() {
-    const tabs = [['company', 'Company'], ['states', 'States'], ['levels', 'Price levels'], ['licenses', 'License rules'], ['invoices', 'Invoices'], ['people', 'People']].concat(isMgr() ? [['history', 'History']] : []);
+    const tabs = [['company', 'Company'], ['states', 'States'], ['levels', 'Price levels'], ['licenses', 'License rules'], ['invoices', 'Invoices'], ['statements', 'Statements & receipts'], ['people', 'People']].concat(isMgr() ? [['history', 'History']] : []);
     if (!tabs.some((t) => t[0] === A.stab)) A.stab = 'company';
     const bar = '<nav class="tabs">' + tabs.map((t) => '<button class="' + (A.stab === t[0] ? 'on' : '') + '" data-stab="' + t[0] + '" data-guide="settings-tab">' + t[1] + '</button>').join('') + '</nav>';
     let body = '';
@@ -354,6 +355,7 @@ export function startApp(root, db) {
     if (A.stab === 'levels') body = cat.levelsHtml();
     if (A.stab === 'licenses') body = cat.licRulesHtml();
     if (A.stab === 'invoices') body = ctr.invSettingsHtml();
+    if (A.stab === 'statements') body = pay.setHtml();
     if (A.stab === 'history') body = historyHtml();
     return '<h1>Settings</h1>' + bar + body;
   }
@@ -365,6 +367,7 @@ export function startApp(root, db) {
     if (A.stab === 'levels') cat.bindLevels();
     if (A.stab === 'licenses') cat.bindLicRules();
     if (A.stab === 'invoices') ctr.bindInvSettings();
+    if (A.stab === 'statements') pay.bindSet();
     if (A.stab === 'history') bindHistory();
   }
   function saveBar(dirty, guideBase) {

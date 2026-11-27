@@ -615,7 +615,9 @@ export function makeCatalog(X) {
       inp('Customer # for EDI (numbers, up to 6)', 'acct_no', ' inputmode="numeric" maxlength="6"') + inp('EDI email (from their back office)', 'edi_email', ' inputmode="email"') +
       '<div class="span2 getsrow"><span>After a sale they get</span>' + [['print', 'Printed'], ['email', 'Emailed invoice'], ['edi', 'EDI file']].map(([k, t]) =>
         '<label class="fld"><span>' + t + '</span><select data-cugets="' + k + '"' + dis + ' data-guide="customers-details-gets-' + k + '">' +
-        opt('', 'Same as Settings', d.gets[k] == null) + opt('true', 'Yes', d.gets[k] === true) + opt('false', 'No', d.gets[k] === false) + '</select></label>').join('') + '</div>' +
+        opt('', 'Same as Settings', d.gets[k] == null) + opt('true', 'Yes', d.gets[k] === true) + opt('false', 'No', d.gets[k] === false) + '</select></label>').join('') +
+        '<label class="fld"><span>Payment receipt</span><select data-curcpt' + dis + ' data-guide="customers-details-gets-receipt">' + opt('', 'Same as Settings', !d.gets.receipt) +
+        [['print', 'Print'], ['email', 'Email'], ['both', 'Print and email'], ['none', 'Nothing']].map(([k, t]) => opt(k, t, d.gets.receipt === k)).join('') + '</select></label></div>' +
       ((co() || {}).role === 'owner' ? inp('Starting balance (owed before StoreOwl)', 'opening', ' inputmode="decimal"', 'span2') : '') + '</div>' +
       '<datalist id="days">' + ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Pick up'].map((x) => '<option value="' + x + '">').join('') + '</datalist>' +
       (!isNew && !ro ? '<label class="chk1"><input type="checkbox" id="cu-active"' + (d.active === false ? '' : ' checked') + ' data-guide="customers-details-active"> Still a customer</label>' : '') +
@@ -913,6 +915,7 @@ export function makeCatalog(X) {
       if (el.tagName === 'SELECT') el.onchange = set; else el.oninput = set;
     });
     $$('[data-cck]').forEach((el) => { el.oninput = () => { const [i, k] = el.dataset.cck.split('|'); d.contacts[+i][k] = el.value; upd(); }; });
+    $$('[data-curcpt]').forEach((el) => { el.onchange = () => { const g = Object.assign({}, d.gets); if (el.value) g.receipt = el.value; else delete g.receipt; d.gets = g; upd(); }; });
     $$('[data-cugets]').forEach((el) => { el.onchange = () => { const g = Object.assign({}, d.gets), k = el.dataset.cugets; if (el.value === '') delete g[k]; else g[k] = el.value === 'true'; d.gets = g; upd(); }; });
     $$('[data-ccrm]').forEach((b) => { b.onclick = () => { d.contacts.splice(+b.dataset.ccrm, 1); X.render(); }; });
     if (q('#cu-ccadd')) q('#cu-ccadd').onclick = () => { d.contacts.push({ name: '', role: '', phone: '' }); X.render(); };

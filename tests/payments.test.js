@@ -116,3 +116,30 @@ test('a statement: start, every line with a running balance, voids left out, agi
   assert.equal(N.terms, ''); assert.equal(N.lines[0].due, '2026-11-03');
   assert.ok(!/Terms/.test(stmtHtml(N))); assert.ok(!/Terms/.test(stmtEmailText(N, co).text)); assert.ok(stmtPdf(N).bytes.length > 800);
 });
+
+test('a payment receipt: what it paid, store credit, what they owe now; PDF and email; statement note and copy', async () => {
+  const { receiptModel, receiptHtml, receiptPdf, receiptName, receiptEmailText } = await import('../src/receipt.js');
+  const { buildReceiptMail, buildStatementMail } = await import('../api/send.js');
+  const co = { name: 'Knox Wholesale', phone: '865-555-0100', email: 'office@knox.example', settings: {} };
+  const pay = { number: 1007, status: 'posted', method: 'check', check_no: '4471', amount: 200, received: '2026-11-27', by_name: 'Sam', note: '',
+    applied: [{ to: 's1', number: 1043, amount: 150 }, { to: null, number: null, amount: 30 }, { to: 's2', number: 1044, amount: 20, from_sale: 'c1' }] };
+  const cust = { name: 'Clinton Hwy Market', store_no: '211', email: 'store@example.com', owes: 412.5 };
+  const M = receiptModel({ co, pay, cust });
+  assert.deepEqual(M.pays.map((x) => [x.what, x.amount]), [['Invoice #1043', 150], ['Starting balance', 30]]);
+  assert.deepEqual(M.credits, [{ what: 'Kept as store credit', amount: 20 }], 'the credit memo line is not this payment');
+  assert.equal(M.how, 'Check #4471');
+  const h = receiptHtml(M);
+  assert.match(h, /PAYMENT RECEIPT[\s\S]*#1007/); assert.match(h, /Pays Invoice #1043/); assert.match(h, /You owe now[\s\S]*\$412\.50/); assert.match(h, /Taken by Sam/);
+  assert.ok(receiptPdf(M).bytes.length > 800);
+  assert.equal(receiptName(M), 'Receipt-1007-Clinton-Hwy-Market.pdf');
+  assert.match(receiptEmailText(M, co).subject, /Payment receipt #1007 · \$200\.00/);
+  const m = buildReceiptMail({ company: co, pay, customer: cust });
+  assert.equal(m.to, 'store@example.com'); assert.equal(m.mail.replyTo, 'office@knox.example');
+  assert.match(buildReceiptMail({ company: co, pay, customer: { name: 'X' } }).err, /no email/);
+  // Statements sent many at once: the note and the copy to the company.
+  const acct = { before: 10, rows: [], payments: [], open: { invoices: [], aging: {}, past_due: 0, store_credit: 0 } };
+  const s = buildStatementMail(co, cust, acct, '2026-10-01', '2026-10-31', 'Please pay by the 15th', 'office@knox.example');
+  assert.equal(s.mail.bcc, 'office@knox.example');
+  const { stmtModel, stmtHtml } = await import('../src/statement.js');
+  assert.match(stmtHtml(stmtModel({ co, cust, acct, from: '2026-10-01', to: '2026-10-31', note: 'Please pay by the 15th' })), /Please pay by the 15th/);
+});

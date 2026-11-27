@@ -206,3 +206,19 @@ bar for forms. **Typing never redraws the page.** Every button / input / select 
   deposit can't be voided by hand (undo the deposit first). The old "Deposited" button on post-dated checks is gone (`payment_deposit` stays
   in the database, unused). Home "Needs you" (managers+): "$X in cash and checks not deposited · oldest N days" → Take to the bank
   (`home-needs-bank`). Demo data has payments and a confirmed deposit. Tests: `deposits`, `ui-payments`.
+- **Phase 3, part 3 = Who owes me, email statements, monthly statements, payment receipts (built 2026-11-27, Moiz approved the 4 pictures,
+  then "yes build them this way and put it on test"; migration `phase3_statements_receipts_owes_2026_11_27` on the test database; ON TEST since 2026-11-27):**
+  Payments' first tab = **Who owes me** (`owes_list`): boxes Stores owe you · Not due yet · 1–30 · 31–60 · 61+, filters Owes something / Past due /
+  Store credit / All stores (`data-owf`), Find a store (in place), Export (CSV), Print, **Email statements…** (managers): window `A.sw` (Last month /
+  This month so far / Custom, Send to owe | all, "N statements will go out · $X" from `stmt_batch`, stores with no email + Print those N, Send me a
+  copy = bcc to the company email) → `/api/send {statements}`. A row opens the store's Invoices & payments. **Receipts** (`src/receipt.js`, pure):
+  after Save payment, the store's `gets.receipt` (customer Details "Payment receipt") else Settings `rcpt.after` (ask | print | email | both | none;
+  default ask): ask = window `A.rcpt` (Print / Email ticks, Skip, amber button), print / email / both = done by itself, none = nothing. Emailed as a
+  PDF through `/api/send {receipt}` (`payment_receipt` / `receipt_sent`, logged on `payments.sends`); the payment panel has Print receipt / Email
+  receipt. **Settings → Statements & receipts** (`pay.setHtml`): monthly statements by themselves (owners only: on, day 1/2/3/5, who, copy, note on
+  every statement, "Next: … · last sent …") + receipts choice; sticky Not saved yet bar. **The monthly run:** pg_cron job `storeowl-statements`
+  (13:00 UTC = 8 AM Eastern) → pg_net POST `{job:'statements', key}` to `job_keys.url` + `/api/send`; the website hands the key back to
+  `stmt_auto_due(key)` (claims each company once a month, last month's dates) and reports with `stmt_auto_done` (History lines by
+  "StoreOwl (monthly statements)", `stmt.lastrun`). The key lives only in `job_keys` (no one can read it). **On a new database: set
+  `job_keys.url` to that app's address** (test = the git-test vercel.app link). `vercel.json` gives `api/send.js` 60 s. Tests: `statements`,
+  `payments` (receipt), `ui-payments`.
