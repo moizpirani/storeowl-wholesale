@@ -8,6 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import nodemailer from 'nodemailer';
 import { invModel, invoicePdf, pdfName, ediFile, ediName, ediSubject, ediBlocked, invEmail, invEmailText } from '../src/invoice.js';
 import { todayIso } from '../src/rules.js';
+import { stmtModel, stmtPdf, stmtName, stmtEmailText } from '../src/statement.js';
 
 const env = (k) => (process.env[k] || '').trim();
 
@@ -45,6 +46,7 @@ export default async function handler(req, res) {
   const url = env('SUPABASE_URL') || env('VITE_SUPABASE_URL'), key = env('SUPABASE_ANON_KEY') || env('VITE_SUPABASE_ANON_KEY');
   if (!tok || !url || !key) return res.status(401).json({ error: 'Sign in again to send it.' });
   const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  if (b.statement) return sendStatement(req, res, b, tok, url, key);
   const what = { email: !!(b.what && b.what.email), edi: !!(b.what && b.what.edi) };
   if (!b.company || !b.sale || !(what.email || what.edi)) return res.status(400).json({ error: 'Pick what to send.' });
   const sb = createClient(url, key, { global: { headers: { Authorization: 'Bearer ' + tok } }, auth: { persistSession: false } });
@@ -62,4 +64,33 @@ export default async function handler(req, res) {
     try { sale = await rpc('sale_sent', { p_company: b.company, p_sale: b.sale, p: { kind: m.kind, to: m.to, ok, err } }); } catch (e) { /* the email still went */ }
   }
   return res.status(200).json({ sent, sale });
+}
+
+// A store's statement as a PDF. POST {company, statement: {customer, from, to}}; the database checks the person can see it.
+export function buildStatementMail(co, cust, acct, from, to) {
+  const M = stmtModel({ co, cust, acct, from, to, today: todayIso() }), t = stmtEmailText(M, co);
+  const mailTo = invEmail(cust);
+  if (!mailTo) return { to: '', err: 'This store has no email.' };
+  return { to: mailTo, mail: { from: '"' + clean(co.name) + '" <' + (env('MAIL_FROM') || 'invoices@storeowl.app') + '>', replyTo: (co.email || '').trim() || undefined, to: mailTo,
+    subject: t.subject, text: t.text, attachments: [{ filename: stmtName(M), content: Buffer.from(stmtPdf(M).bytes), contentType: 'application/pdf' }] } };
+}
+async function sendStatement(req, res, b, tok, url, key) {
+  const st = b.statement || {};
+  if (!b.company || !st.customer || !st.from || !st.to) return res.status(400).json({ error: 'Pick the store and the dates.' });
+  const sb = createClient(url, key, { global: { headers: { Authorization: 'Bearer ' + tok } }, auth: { persistSession: false } });
+  const rpc = async (n, a) => { const { data, error } = await sb.rpc(n, a); if (error) throw new Error(error.message); return data; };
+  let cust, acct, co;
+  try {
+    cust = await rpc('customer_get', { p_company: b.company, p_id: st.customer });
+    acct = await rpc('customer_account', { p_company: b.company, p_customer: st.customer, p_from: st.from, p_to: st.to });
+    co = ((await rpc('my_companies', {})) || []).find((c) => c.id === b.company);
+  } catch (e) { return res.status(403).json({ error: e.message }); }
+  if (!co) return res.status(403).json({ error: 'Company not found.' });
+  const t = mailer();
+  if (!t) return res.status(503).json({ error: 'Emails aren’t set up yet (StoreOwl needs to add the email sender).' });
+  const m = buildStatementMail(co, cust, acct, st.from, st.to);
+  let ok = !m.err, err = m.err || '';
+  if (ok) { try { await t.sendMail(m.mail); } catch (e) { ok = false; err = String(e.message || e).slice(0, 200); } }
+  try { await rpc('statement_sent', { p_company: b.company, p_customer: st.customer, p: { to: m.to, from: st.from, upto: st.to, ok, err } }); } catch (e) { /* the email still went */ }
+  return res.status(ok ? 200 : 400).json(ok ? { to: m.to } : { error: err });
 }

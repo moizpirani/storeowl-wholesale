@@ -2,7 +2,7 @@
 // A pretend backend (makeFake) has the same calls, for tests and pictures.
 
 import { cleanStates } from './states.js';
-import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck } from './rules.js';
+import { DEFAULT_SETTINGS, itemCheck, custCheck, levelsCheck, cleanUpc, priceSale, priceCredit, creditCheck, openItems, todayIso } from './rules.js';
 
 export function makeDb(sb) {
   async function rpc(name, args) {
@@ -80,6 +80,11 @@ export function makeDb(sb) {
     saleSave: (id, p) => rpc('sale_save', { p_company: id, p }),
     sales: (id, status) => rpc('sales_list', { p_company: id, p_status: status }),
     customerAccount: (id, cust, from, to) => rpc('customer_account', { p_company: id, p_customer: cust, p_from: from, p_to: to }),
+    customerOpen: (id, cust) => rpc('customer_open', { p_company: id, p_customer: cust }),
+    paymentSave: (id, p) => rpc('payment_save', { p_company: id, p }),
+    paymentDeposit: (id, pay) => rpc('payment_deposit', { p_company: id, p_id: pay }),
+    paymentVoid: (id, pay, why) => rpc('payment_void', { p_company: id, p_id: pay, p_why: why }),
+    payments: (id, from, to) => rpc('payments_list', { p_company: id, p_from: from, p_to: to }),
     saleLast: (id, cust) => rpc('sale_last', { p_company: id, p_customer: cust }),
     creditPrices: (id, cust) => rpc('credit_prices', { p_company: id, p_customer: cust }),
     saleVoid: (id, sale, why) => rpc('sale_void', { p_company: id, p_sale: sale, p_why: why }),
@@ -95,6 +100,17 @@ export function makeDb(sb) {
       if (!tok) throw new Error('Sign in again to send it.');
       let r;
       try { r = await fetch('/api/send', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok }, body: JSON.stringify({ company: id, sale, what }) }); }
+      catch (e) { throw new Error(plain(e.message)); }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'The email couldn’t be sent. Try again.');
+      return j;
+    },
+    async sendStatement(id, customer, from, to) {
+      const { data } = await sb.auth.getSession();
+      const tok = data.session && data.session.access_token;
+      if (!tok) throw new Error('Sign in again to send it.');
+      let r;
+      try { r = await fetch('/api/send', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok }, body: JSON.stringify({ company: id, statement: { customer, from, to } }) }); }
       catch (e) { throw new Error(plain(e.message)); }
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || 'The email couldn’t be sent. Try again.');
@@ -118,7 +134,7 @@ export function plain(m) {
 export function makeFake(opts) {
   opts = opts || {};
   let me = opts.signedIn ? { email: opts.signedIn } : null;
-  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [] };
+  const S = { companies: [], members: [], invites: [], log: [], items: [], customers: [], notes: [], imports: [], sales: [], upcs: [], payments: [], applies: [] };
   let n = 0;
   const id = () => 'c' + (++n);
   const uid = (email) => 'u-' + email;
@@ -145,13 +161,22 @@ export function makeFake(opts) {
     return o;
   }
   function custOut(c, full) {
-    const o = copy(c); delete o.company_id; delete o.import_id; o.owes = Math.round(((c.opening || 0) + S.sales.filter((x) => x.customer_id === c.id && x.status === 'posted').reduce((a, x) => a + x.total, 0)) * 100) / 100;
+    const o = copy(c); delete o.company_id; delete o.import_id; o.owes = Math.round(((c.opening || 0) + S.sales.filter((x) => x.customer_id === c.id && x.status === 'posted').reduce((a, x) => a + x.total, 0)
+      - S.payments.filter((p) => p.customer_id === c.id && p.status === 'posted').reduce((a, p) => a + p.amount, 0)) * 100) / 100;
+    o.past_due = openOf(c).past_due;
     if (full) {
       o.notes = S.notes.filter((x) => x.customer_id === c.id).slice().reverse().map((x) => ({ id: x.id, text: x.text, by: x.by, at: x.at }));
       o.history = S.log.filter((x) => x.company_id === c.company_id && x.detail.customer === c.id).slice(0, 100);
       o.copies = (S.copies || []).filter((x) => x.customer_id === c.id && !x.removed_at).slice().reverse()
         .map((x) => ({ id: x.id, kind: x.kind, name: x.name, type: x.type, url: x.url, number: x.number, expires: x.expires, by: x.by, at: x.at }));
     }
+    return o;
+  }
+  const openOf = (c) => openItems(c, S.sales.filter((x) => x.customer_id === c.id), S.payments.filter((x) => x.customer_id === c.id), S.applies.filter((x) => x.customer_id === c.id), todayIso());
+  function payOut(p) {
+    const o = copy(p); delete o.company_id; const c = S.customers.find((x) => x.id === p.customer_id) || {};
+    o.customer = { id: c.id, name: c.name, store_no: c.store_no, city: c.city };
+    o.applied = S.applies.filter((a) => a.from_pay === p.id || a.pay_event === p.id).map((a) => ({ to: a.to_sale, number: (S.sales.find((s) => s.id === a.to_sale) || {}).number || null, amount: a.amount, from_sale: a.from_sale || null }));
     return o;
   }
   function lastPaid(cid, cust) {
@@ -508,6 +533,77 @@ export function makeFake(opts) {
       }
       return saleOut(s);
     },
+    async customerOpen(cid, cust) {
+      need(cid, 'staff');
+      const c = S.customers.find((x) => x.id === cust && x.company_id === cid);
+      if (!c) throw new Error('Customer not found');
+      return copy(openOf(c));
+    },
+    async paymentSave(cid, p) {
+      const mm = need(cid, 'staff'), myName = () => mm.name || me.email;
+      const c = S.customers.find((x) => x.id === p.customer_id && x.company_id === cid);
+      if (!c) throw new Error('Pick a customer');
+      const m = p.method || '', amt = Math.round((Number(p.amount) || 0) * 100) / 100, t = todayIso();
+      if (!['cash', 'check', 'card', 'ach', 'other'].includes(m)) throw new Error('Pick how they paid');
+      if (amt < 0) throw new Error('The amount can’t be minus');
+      if (m === 'check' && !String(p.check_no || '').trim()) throw new Error('Type the check number');
+      if (p.received && p.received > t) throw new Error('The day it was received can’t be in the future');
+      const op = openOf(c), use = (p.use || []).filter((u) => Number(u.amount) > 0), payTo = (p.pay || []).filter((x) => Number(x.amount) > 0);
+      let totUse = 0, totPay = 0;
+      use.forEach((u) => { const src = op.credits.find((x) => x.kind === u.kind && (x.id || '') === (u.id || '')); if (!src) throw new Error('That store credit isn’t there any more'); if (u.amount > src.left + 0.004) throw new Error('Only ' + src.left + ' of that credit is left'); totUse += Number(u.amount); });
+      payTo.forEach((x) => { const src = op.invoices.find((y) => (y.id || '') === (x.to || '')); if (!src) throw new Error('One of those invoices is already paid'); if (x.amount > src.open + 0.004) throw new Error('That’s more than what’s left on invoice ' + (src.number || '(starting balance)')); totPay += Number(x.amount); });
+      totUse = Math.round(totUse * 100) / 100; totPay = Math.round(totPay * 100) / 100;
+      if (totPay > totUse + amt + 0.004) throw new Error('You’re paying ' + totPay.toFixed(2) + ' but have ' + (totUse + amt).toFixed(2) + ' to pay with');
+      if (amt === 0 && totUse === 0) throw new Error('Type how much they paid');
+      const co = S.companies.find((x) => x.id === cid); co.next_payment = co.next_payment || 1001;
+      const held = m === 'check' && p.check_date && p.check_date > t;
+      const pay = { id: id(), company_id: cid, customer_id: c.id, number: co.next_payment++, status: held ? 'held' : 'posted', method: m, amount: amt,
+        check_no: String(p.check_no || '').trim(), check_date: p.check_date || null, received: p.received || t, note: String(p.note || '').trim(), sale_id: p.sale_id || null,
+        by_name: myName(cid), created_at: new Date().toISOString(), deposited_at: null, deposited_by: '', void_at: null, void_by: '', void_why: '' };
+      S.payments.push(pay);
+      const fund = use.map((u) => ({ kind: u.kind, id: u.id, left: Number(u.amount) }));
+      payTo.forEach((x) => {
+        let want = Number(x.amount);
+        while (want > 0.004) {
+          const f = fund.find((y) => y.left > 0.004);
+          if (!f) { S.applies.push({ customer_id: c.id, from_pay: pay.id, from_sale: null, to_sale: x.to || null, amount: Math.round(want * 100) / 100, pay_event: pay.id }); want = 0; break; }
+          const take = Math.round(Math.min(want, f.left) * 100) / 100;
+          if (f.kind === 'credit') S.applies.push({ customer_id: c.id, from_pay: null, from_sale: f.id, to_sale: x.to || null, amount: take, pay_event: pay.id });
+          if (f.kind === 'payment') S.applies.push({ customer_id: c.id, from_pay: f.id, from_sale: null, to_sale: x.to || null, amount: take, pay_event: pay.id });
+          f.left = Math.round((f.left - take) * 100) / 100; want = Math.round((want - take) * 100) / 100;
+        }
+      });
+      log(cid, held ? 'post-dated check taken' : 'payment taken', { payment: pay.id, number: pay.number, customer: c.id, amount: amt, method: m, paid: totPay });
+      return payOut(pay);
+    },
+    async paymentDeposit(cid, pid) {
+      const mm = need(cid, 'staff'), myName = () => mm.name || me.email;
+      const x = S.payments.find((y) => y.id === pid && y.company_id === cid);
+      if (!x) throw new Error('Payment not found');
+      if (x.status !== 'held') throw new Error('This check isn’t waiting');
+      if (x.check_date > todayIso()) throw new Error('This check is dated ' + x.check_date + '; deposit it on or after that day');
+      x.status = 'posted'; x.deposited_at = new Date().toISOString(); x.deposited_by = myName(cid);
+      log(cid, 'post-dated check deposited', { payment: x.id, number: x.number, customer: x.customer_id, amount: x.amount });
+      return payOut(x);
+    },
+    async paymentVoid(cid, pid, why) {
+      const mm = need(cid, 'manager'), myName = () => mm.name || me.email;
+      const x = S.payments.find((y) => y.id === pid && y.company_id === cid);
+      if (!x) throw new Error('Payment not found');
+      if (x.status === 'void') throw new Error('This is already void');
+      if (!String(why || '').trim()) throw new Error('Say why it’s void');
+      x.status = 'void'; x.void_at = new Date().toISOString(); x.void_by = myName(cid); x.void_why = String(why).trim();
+      S.applies = S.applies.filter((a) => !(a.pay_event === x.id && a.from_pay !== x.id));
+      log(cid, 'payment voided', { payment: x.id, number: x.number, customer: x.customer_id, amount: x.amount, why: x.void_why });
+      return payOut(x);
+    },
+    async payments(cid, from, to) {
+      need(cid, 'staff');
+      if (!from || !to || to < from) throw new Error('Pick the dates');
+      const mine = S.payments.filter((x) => x.company_id === cid);
+      return { rows: mine.filter((x) => x.received >= from && x.received <= to).sort((a, b) => (a.received === b.received ? b.number - a.number : a.received < b.received ? 1 : -1)).map(payOut),
+        held: mine.filter((x) => x.status === 'held').sort((a, b) => (a.check_date < b.check_date ? -1 : 1)).map(payOut) };
+    },
     async customerAccount(cid, cust, from, to) {
       need(cid, 'staff');
       const c = S.customers.find((x) => x.id === cust && x.company_id === cid);
@@ -517,7 +613,11 @@ export function makeFake(opts) {
       const before = Math.round(((c.opening || 0) + mine.filter((x) => x.status === 'posted' && x.invoice_date < from).reduce((a, x) => a + x.total, 0)) * 100) / 100;
       const rows = mine.filter((x) => x.invoice_date >= from && x.invoice_date <= to).sort((a, b) => (a.invoice_date === b.invoice_date ? a.number - b.number : a.invoice_date < b.invoice_date ? -1 : 1))
         .map((x) => ({ id: x.id, kind: x.kind || 'invoice', status: x.status, number: x.number, date: x.invoice_date, total: x.total, units: x.units, lines: (x.lines || []).length, by: x.posted_by, void_at: x.void_at || null, void_by: x.void_by || '', void_why: x.void_why || '' }));
-      return { before, opening: c.opening || 0, rows };
+      const pm = S.payments.filter((x) => x.customer_id === cust);
+      const bef2 = Math.round((before - pm.filter((x) => x.status === 'posted' && x.received < from).reduce((a, x) => a + x.amount, 0)) * 100) / 100;
+      const payments = pm.filter((x) => x.received >= from && x.received <= to).sort((a, b) => (a.received === b.received ? a.number - b.number : a.received < b.received ? -1 : 1))
+        .map((x) => ({ id: x.id, kind: 'payment', status: x.status, number: x.number, date: x.received, total: -x.amount, method: x.method, check_no: x.check_no, check_date: x.check_date, by: x.by_name, void_at: x.void_at, void_by: x.void_by, void_why: x.void_why, note: x.note }));
+      return { before: bef2, opening: c.opening || 0, rows, payments, open: copy(openOf(c)) };
     },
     async sales(cid, status) {
       const m = need(cid, 'staff');
@@ -542,6 +642,16 @@ export function makeFake(opts) {
       return saleOut(x);
     },
     // The pretend website: writes down what would have been emailed (S.mail) instead of sending.
+    async sendStatement(cid, customer, from, to) {
+      need(cid, 'staff');
+      const c = S.customers.find((x) => x.id === customer && x.company_id === cid);
+      if (!c) throw new Error('Customer not found');
+      const em = (c.inv_email || c.email || '').trim();
+      if (!em) throw new Error('This store has no email.');
+      (S.mail = S.mail || []).push({ kind: 'statement', to: em, customer, from, upto: to });
+      log(cid, 'statement emailed', { customer, to: em, from, upto: to });
+      return { to: em };
+    },
     async sendInvoice(cid, sale, what) {
       const d = await this.invoiceData(cid, sale), c = d.customer, out = [];
       (S.mail = S.mail || []);

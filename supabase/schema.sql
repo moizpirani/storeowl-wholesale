@@ -1738,3 +1738,307 @@ begin
 end $$;
 revoke execute on function customer_account(uuid,uuid,date,date) from public, anon;
 grant execute on function customer_account(uuid,uuid,date,date) to authenticated;
+
+-- =====================================================================
+-- Phase 3, part 1: payments, paying invoices, store credit, aging (2026-11-27)
+-- A payment (cash, check, card, bank transfer, other) is money from a store. It pays chosen invoices (and the starting
+-- balance); money left over is store credit. Credit memos can pay invoices too. A post-dated check is "held": it pays
+-- nothing and isn't taken off what they owe until someone deposits it on or after its date. A payment is never deleted:
+-- a mistake or a check that came back is voided with a reason, and what it paid is owed again.
+-- owes = starting balance + posted invoices and credits − posted payments.
+-- =====================================================================
+alter table companies add column if not exists next_payment int not null default 1001;
+
+create table if not exists payments (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  customer_id uuid not null references customers(id),
+  number int not null,
+  status text not null check (status in ('posted','held','void')),
+  method text not null check (method in ('cash','check','card','ach','other')),
+  amount numeric(12,2) not null check (amount >= 0),
+  check_no text not null default '',
+  check_date date,
+  received date not null default current_date,
+  note text not null default '',
+  sale_id uuid references sales(id),       -- paid at the Counter with this sale
+  by_name text not null default '',
+  created_at timestamptz not null default now(),
+  deposited_at timestamptz,
+  deposited_by text not null default '',
+  void_at timestamptz,
+  void_by text not null default '',
+  void_why text not null default '',
+  unique (company_id, number)
+);
+create index if not exists payments_customer on payments(customer_id, status, received);
+create index if not exists payments_company on payments(company_id, received desc);
+alter table payments enable row level security;
+revoke all on payments from anon, authenticated;
+
+-- What paid what: from a payment or a credit memo, to an invoice or the starting balance (to_sale null).
+create table if not exists pay_applies (
+  id bigserial primary key,
+  company_id uuid not null references companies(id) on delete cascade,
+  customer_id uuid not null references customers(id),
+  from_pay uuid references payments(id),
+  from_sale uuid references sales(id),
+  to_sale uuid references sales(id),
+  amount numeric(12,2) not null check (amount > 0),
+  pay_event uuid,                           -- the payment this was entered with (credits used with a payment)
+  at timestamptz not null default now(),
+  check (from_pay is not null or from_sale is not null)
+);
+create index if not exists pay_applies_customer on pay_applies(customer_id);
+alter table pay_applies enable row level security;
+revoke all on pay_applies from anon, authenticated;
+
+-- Only applications whose money is real count: from a posted payment or a posted credit memo, to a posted invoice (or the start).
+create or replace function _applies_live(p_customer uuid) returns setof pay_applies
+language sql stable security definer set search_path = public as $$
+  select a.* from pay_applies a
+  left join payments p on p.id = a.from_pay
+  left join sales f on f.id = a.from_sale
+  left join sales t on t.id = a.to_sale
+  where a.customer_id = p_customer
+    and (a.from_pay is null or p.status = 'posted')
+    and (a.from_sale is null or f.status = 'posted')
+    and (a.to_sale is null or t.status = 'posted') $$;
+
+create or replace function _due_days(p_terms text) returns int language sql immutable as $$
+  select case p_terms when 'net7' then 7 when 'net10' then 10 when 'net14' then 14 when 'net30' then 30 else 0 end $$;
+
+-- A customer's open items: what's still owed on each invoice (and the starting balance), and what's left to use
+-- (credit memos and payments not used up = store credit). Plus aging by days past due.
+create or replace function _open_items(p_customer uuid, p_today date) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c customers; inv jsonb; cr jsonb; op numeric; opdue date; ag jsonb; held numeric;
+begin
+  select * into c from customers where id = p_customer;
+  op := round(coalesce(c.opening, 0) - coalesce((select sum(amount) from _applies_live(c.id) where to_sale is null), 0), 2);
+  opdue := c.created_at::date;
+  select coalesce(jsonb_agg(x order by x->>'date', (x->>'number')::int), '[]'::jsonb) into inv from (
+    select jsonb_build_object('id', s.id, 'number', s.number, 'date', s.invoice_date, 'due', s.invoice_date + _due_days(c.terms),
+      'total', s.total, 'paid', coalesce(a.paid, 0), 'open', round(s.total - coalesce(a.paid, 0), 2),
+      'late', greatest(0, p_today - (s.invoice_date + _due_days(c.terms)))) x
+    from sales s left join (select to_sale, sum(amount) paid from _applies_live(c.id) group by to_sale) a on a.to_sale = s.id
+    where s.customer_id = c.id and s.status = 'posted' and s.kind = 'invoice' and s.total - coalesce(a.paid, 0) > 0.004) z;
+  if op > 0.004 then
+    inv := jsonb_build_array(jsonb_build_object('id', null, 'number', null, 'opening', true, 'date', opdue, 'due', opdue, 'total', c.opening,
+      'paid', round(c.opening - op, 2), 'open', op, 'late', greatest(0, p_today - opdue))) || inv;
+  end if;
+  select coalesce(jsonb_agg(x order by x->>'date'), '[]'::jsonb) into cr from (
+    select jsonb_build_object('kind', 'credit', 'id', s.id, 'number', s.number, 'date', s.invoice_date,
+      'left', round(-s.total - coalesce((select sum(amount) from _applies_live(c.id) where from_sale = s.id), 0), 2)) x
+    from sales s where s.customer_id = c.id and s.status = 'posted' and s.kind = 'credit'
+    union all
+    select jsonb_build_object('kind', 'payment', 'id', p.id, 'number', p.number, 'date', p.received,
+      'left', round(p.amount - coalesce((select sum(amount) from _applies_live(c.id) where from_pay = p.id), 0), 2)) x
+    from payments p where p.customer_id = c.id and p.status = 'posted') z where (x->>'left')::numeric > 0.004;
+  -- a negative starting balance (they had credit in the old system) is store credit too
+  if op < -0.004 then cr := jsonb_build_array(jsonb_build_object('kind', 'opening', 'id', null, 'number', null, 'date', opdue, 'left', -op)) || cr; end if;
+  select jsonb_build_object(
+    'current', coalesce(sum((x->>'open')::numeric) filter (where (x->>'late')::int = 0), 0),
+    'd30', coalesce(sum((x->>'open')::numeric) filter (where (x->>'late')::int between 1 and 30), 0),
+    'd60', coalesce(sum((x->>'open')::numeric) filter (where (x->>'late')::int between 31 and 60), 0),
+    'd90', coalesce(sum((x->>'open')::numeric) filter (where (x->>'late')::int between 61 and 90), 0),
+    'over', coalesce(sum((x->>'open')::numeric) filter (where (x->>'late')::int > 90), 0)) into ag
+    from jsonb_array_elements(inv) x;
+  select coalesce(sum(amount), 0) into held from payments where customer_id = c.id and status = 'held';
+  return jsonb_build_object('invoices', inv, 'credits', cr, 'aging', ag,
+    'past_due', (ag->>'d30')::numeric + (ag->>'d60')::numeric + (ag->>'d90')::numeric + (ag->>'over')::numeric,
+    'store_credit', coalesce((select sum((x->>'left')::numeric) from jsonb_array_elements(cr) x), 0), 'held', held);
+end $$;
+
+-- What a customer owes = starting balance + posted invoices and credits − posted payments.
+create or replace function _cust_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(c) - 'company_id' - 'import_id' || jsonb_build_object(
+    'owes', round(c.opening + coalesce((select sum(total) from sales s where s.customer_id = c.id and s.status = 'posted'), 0)
+      - coalesce((select sum(amount) from payments p where p.customer_id = c.id and p.status = 'posted'), 0), 2),
+    'past_due', coalesce((_open_items(c.id, current_date)->>'past_due')::numeric, 0),
+    'licenses', coalesce((select jsonb_agg(jsonb_build_object('kind', l.kind, 'number', l.number, 'expires', l.expires, 'copy', l.copy) order by l.kind)
+      from customer_licenses l where l.customer_id = c.id), '[]'::jsonb))
+  from customers c where c.id = p_id $$;
+
+create or replace function customer_open(p_company uuid, p_customer uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  return _open_items(p_customer, current_date);
+end $$;
+
+create or replace function _pay_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(p) - 'company_id' || jsonb_build_object(
+    'customer', jsonb_build_object('id', c.id, 'name', c.name, 'store_no', c.store_no, 'city', c.city),
+    'applied', coalesce((select jsonb_agg(jsonb_build_object('to', a.to_sale, 'number', s.number, 'amount', a.amount, 'from_sale', a.from_sale,
+        'from_number', f.number) order by a.id)
+      from pay_applies a left join sales s on s.id = a.to_sale left join sales f on f.id = a.from_sale where a.from_pay = p.id or a.pay_event = p.id), '[]'::jsonb))
+  from payments p join customers c on c.id = p.customer_id where p.id = p_id $$;
+
+-- Take a payment. p = {customer_id, amount, method, check_no?, check_date?, received?, note?, sale_id?,
+--   pay: [{to: sale id | null (starting balance), amount}], use: [{kind: credit|payment|opening, id, amount}]}
+-- Credits used go first, then the money; money left over stays as store credit. A check dated later than today is held.
+create or replace function _pay_make(p_company uuid, p jsonb) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare c customers; amt numeric := round(coalesce(_num(p->'amount'), 0), 2); m text := coalesce(p->>'method',''); pid uuid; num int;
+  who text := _my_name(p_company); st text := 'posted'; cd date := nullif(p->>'check_date','')::date; rd date := coalesce(nullif(p->>'received','')::date, current_date);
+  op jsonb; x jsonb; u jsonb; want numeric; left_ numeric; take numeric; fund jsonb := '[]'::jsonb; i int; tot_use numeric := 0; tot_pay numeric := 0;
+  src jsonb; cap numeric;
+begin
+  select * into c from customers where id = nullif(p->>'customer_id','')::uuid and company_id = p_company;
+  if c.id is null then raise exception 'pick a customer'; end if;
+  if m not in ('cash','check','card','ach','other') then raise exception 'pick how they paid'; end if;
+  if amt < 0 then raise exception 'the amount can''t be minus'; end if;
+  if m = 'check' and length(trim(coalesce(p->>'check_no',''))) = 0 then raise exception 'type the check number'; end if;
+  if rd > current_date then raise exception 'the day it was received can''t be in the future'; end if;
+  if m = 'check' and cd is not null and cd > current_date then st := 'held'; end if;
+  op := _open_items(c.id, current_date);
+  -- credits to use (checked against what's really left)
+  for u in select * from jsonb_array_elements(coalesce(p->'use','[]'::jsonb)) loop
+    take := round(coalesce(_num(u->'amount'), 0), 2);
+    if take <= 0 then continue; end if;
+    select y into src from jsonb_array_elements(op->'credits') y where y->>'kind' = u->>'kind' and coalesce(y->>'id','') = coalesce(u->>'id','');
+    if src is null then raise exception 'that store credit isn''t there any more'; end if;
+    if take > (src->>'left')::numeric + 0.004 then raise exception 'only % of that credit is left', (src->>'left'); end if;
+    fund := fund || jsonb_build_array(jsonb_build_object('kind', u->>'kind', 'id', u->>'id', 'left', take));
+    tot_use := tot_use + take;
+  end loop;
+  for x in select * from jsonb_array_elements(coalesce(p->'pay','[]'::jsonb)) loop
+    want := round(coalesce(_num(x->'amount'), 0), 2);
+    if want <= 0 then continue; end if;
+    select y into src from jsonb_array_elements(op->'invoices') y where coalesce(y->>'id','') = coalesce(x->>'to','');
+    if src is null then raise exception 'one of those invoices is already paid'; end if;
+    if want > (src->>'open')::numeric + 0.004 then raise exception 'that''s more than what''s left on invoice %', coalesce(src->>'number','(starting balance)'); end if;
+    tot_pay := tot_pay + want;
+  end loop;
+  if tot_pay > tot_use + amt + 0.004 then raise exception 'you''re paying % but have % to pay with', tot_pay, tot_use + amt; end if;
+  if amt = 0 and tot_use = 0 then raise exception 'type how much they paid'; end if;
+  if amt = 0 and m not in ('other') and tot_pay = 0 then raise exception 'type how much they paid'; end if;
+  update companies set next_payment = next_payment + 1 where id = p_company returning next_payment - 1 into num;
+  insert into payments(company_id, customer_id, number, status, method, amount, check_no, check_date, received, note, sale_id, by_name)
+    values (p_company, c.id, num, st, m, amt, left(trim(coalesce(p->>'check_no','')), 30), cd, rd, left(trim(coalesce(p->>'note','')), 200),
+      nullif(p->>'sale_id','')::uuid, who) returning id into pid;
+  -- pay the picked invoices: credits first, then the money
+  for x in select * from jsonb_array_elements(coalesce(p->'pay','[]'::jsonb)) loop
+    want := round(coalesce(_num(x->'amount'), 0), 2);
+    while want > 0.004 loop
+      i := null;
+      for k in 0 .. jsonb_array_length(fund) - 1 loop
+        if (fund->k->>'left')::numeric > 0.004 then i := k; exit; end if;
+      end loop;
+      if i is null then
+        insert into pay_applies(company_id, customer_id, from_pay, to_sale, amount, pay_event) values (p_company, c.id, pid, nullif(x->>'to','')::uuid, want, pid);
+        want := 0;
+      else
+        take := least(want, (fund->i->>'left')::numeric);
+        if fund->i->>'kind' = 'credit' then
+          insert into pay_applies(company_id, customer_id, from_sale, to_sale, amount, pay_event) values (p_company, c.id, (fund->i->>'id')::uuid, nullif(x->>'to','')::uuid, take, pid);
+        elsif fund->i->>'kind' = 'payment' then
+          insert into pay_applies(company_id, customer_id, from_pay, to_sale, amount, pay_event) values (p_company, c.id, (fund->i->>'id')::uuid, nullif(x->>'to','')::uuid, take, pid);
+        end if;
+        -- a negative starting balance used as credit needs no row: it just lowers what they owe already
+        fund := jsonb_set(fund, array[i::text, 'left'], to_jsonb(round((fund->i->>'left')::numeric - take, 2)));
+        want := round(want - take, 2);
+      end if;
+    end loop;
+  end loop;
+  perform _log(p_company, case when st = 'held' then 'post-dated check taken' else 'payment taken' end,
+    jsonb_build_object('payment', pid, 'number', num, 'customer', c.id, 'amount', amt, 'method', m, 'check_no', nullif(p->>'check_no',''), 'paid', tot_pay));
+  return pid;
+end $$;
+
+create or replace function payment_save(p_company uuid, p jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare pid uuid;
+begin
+  perform _need(p_company, 'staff');
+  pid := _pay_make(p_company, p);
+  return _pay_json(pid);
+end $$;
+
+-- A post-dated check is deposited on or after its date: now it counts.
+create or replace function payment_deposit(p_company uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x payments; who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'staff');
+  select * into x from payments where id = p_id and company_id = p_company for update;
+  if x.id is null then raise exception 'payment not found'; end if;
+  if x.status <> 'held' then raise exception 'this check isn''t waiting'; end if;
+  if x.check_date > current_date then raise exception 'this check is dated %; deposit it on or after that day', to_char(x.check_date, 'Mon DD'); end if;
+  update payments set status = 'posted', deposited_at = now(), deposited_by = who where id = x.id;
+  perform _log(p_company, 'post-dated check deposited', jsonb_build_object('payment', x.id, 'number', x.number, 'customer', x.customer_id, 'amount', x.amount));
+  return _pay_json(x.id);
+end $$;
+
+-- Void a payment (a mistake, or a check that came back): kept, and what it paid is owed again.
+create or replace function payment_void(p_company uuid, p_id uuid, p_why text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x payments; who text := _my_name(p_company);
+begin
+  perform _need(p_company, 'manager');
+  select * into x from payments where id = p_id and company_id = p_company for update;
+  if x.id is null then raise exception 'payment not found'; end if;
+  if x.status = 'void' then raise exception 'this is already void'; end if;
+  if length(trim(coalesce(p_why,''))) = 0 then raise exception 'say why it''s void'; end if;
+  update payments set status = 'void', void_at = now(), void_by = who, void_why = left(trim(p_why), 200) where id = x.id;
+  -- credits used with it go back to being store credit
+  delete from pay_applies where pay_event = x.id and from_pay is distinct from x.id;
+  perform _log(p_company, 'payment voided', jsonb_build_object('payment', x.id, 'number', x.number, 'customer', x.customer_id, 'amount', x.amount, 'why', trim(p_why)));
+  return _pay_json(x.id);
+end $$;
+
+-- Payments between two dates (by the day received), newest first, with the customer's name.
+create or replace function payments_list(p_company uuid, p_from date, p_to date) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'pick the dates'; end if;
+  return jsonb_build_object('rows', coalesce((select jsonb_agg(_pay_json(id) order by received desc, number desc) from payments
+      where company_id = p_company and received between p_from and p_to), '[]'::jsonb),
+    'held', coalesce((select jsonb_agg(_pay_json(id) order by check_date, number) from payments where company_id = p_company and status = 'held'), '[]'::jsonb));
+end $$;
+
+-- The customer's Invoices & payments tab now lists payments too.
+create or replace function customer_account(p_company uuid, p_customer uuid, p_from date, p_to date) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c customers; bef numeric; rows jsonb; pays jsonb;
+begin
+  perform _need(p_company, 'staff');
+  select * into c from customers where id = p_customer and company_id = p_company;
+  if c.id is null then raise exception 'customer not found'; end if;
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'pick the dates'; end if;
+  if p_to - p_from > 800 then raise exception 'pick up to two years at a time'; end if;
+  select coalesce(c.opening, 0) + coalesce(sum(total), 0) into bef from sales
+    where company_id = p_company and customer_id = c.id and status = 'posted' and invoice_date < p_from;
+  bef := bef - coalesce((select sum(amount) from payments where customer_id = c.id and status = 'posted' and received < p_from), 0);
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'kind', kind, 'status', status, 'number', number, 'date', invoice_date, 'total', total,
+      'units', units, 'lines', jsonb_array_length(lines), 'by', posted_by, 'void_at', void_at, 'void_by', void_by, 'void_why', void_why)
+      order by invoice_date, number), '[]'::jsonb) into rows
+    from sales where company_id = p_company and customer_id = c.id and status in ('posted','void') and invoice_date between p_from and p_to;
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'kind', 'payment', 'status', status, 'number', number, 'date', received, 'total', -amount,
+      'method', method, 'check_no', check_no, 'check_date', check_date, 'by', by_name, 'void_at', void_at, 'void_by', void_by, 'void_why', void_why, 'note', note)
+      order by received, number), '[]'::jsonb) into pays
+    from payments where customer_id = c.id and received between p_from and p_to;
+  return jsonb_build_object('before', round(bef, 2), 'opening', coalesce(c.opening, 0), 'rows', rows, 'payments', pays,
+    'open', _open_items(c.id, current_date));
+end $$;
+
+revoke execute on function _applies_live(uuid), _open_items(uuid,date), _pay_json(uuid), _pay_make(uuid,jsonb) from public, anon, authenticated;
+revoke execute on function customer_open(uuid,uuid), payment_save(uuid,jsonb), payment_deposit(uuid,uuid), payment_void(uuid,uuid,text), payments_list(uuid,date,date) from public, anon;
+grant execute on function customer_open(uuid,uuid), payment_save(uuid,jsonb), payment_deposit(uuid,uuid), payment_void(uuid,uuid,text), payments_list(uuid,date,date) to authenticated;
+
+-- A statement was emailed: written in the customer's History.
+create or replace function statement_sent(p_company uuid, p_customer uuid, p jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _need(p_company, 'staff');
+  if not exists (select 1 from customers where id = p_customer and company_id = p_company) then raise exception 'customer not found'; end if;
+  perform _log(p_company, case when coalesce((p->>'ok')::boolean, true) then 'statement emailed' else 'statement email failed' end,
+    jsonb_build_object('customer', p_customer, 'to', p->>'to', 'from', p->>'from', 'upto', p->>'upto', 'err', nullif(p->>'err','')));
+end $$;
+revoke execute on function statement_sent(uuid,uuid,jsonb) from public, anon;
+grant execute on function statement_sent(uuid,uuid,jsonb) to authenticated;

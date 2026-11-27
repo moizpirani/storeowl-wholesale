@@ -88,7 +88,7 @@ test('Counter: return or credit, then void an invoice', async () => {
   const box = $('#ac-q'); type(box, '1002'); assert.equal($('#ac-q'), box, 'typing never redraws');
   assert.equal($$('#ac-rows tr.acr:not([hidden])').length, 1);
   $('[data-acpre="last"]').click(); await tick(10);
-  assert.match($('#ac-rows').textContent, /No invoices or credits in these dates/);
+  assert.match($('#ac-rows').textContent, /Nothing in these dates/);
   $('[data-acpre="month"]').click(); await tick(10);
   $$('[data-acopen]')[1].click(); await tick(10);
   assert.match($('.ivpan').textContent, /Credit memo 1002/, 'a row opens it on the Invoices page');

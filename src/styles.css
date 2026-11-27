@@ -503,3 +503,26 @@ h2.mt{margin-top:18px}
 .actab .acgo{color:var(--muted);width:24px}
 @media (max-width:1100px){.ackpis{grid-template-columns:repeat(3,1fr)}}
 .actab td.acsub{font-size:13px;color:var(--muted)}.actab .tag{white-space:nowrap}
+
+/* Payments: the Take a payment window and the Payments page */
+.pmpan{width:620px;max-width:94vw;max-height:92vh;overflow-y:auto}
+.pmpan .hdr{display:flex;justify-content:space-between;align-items:center;margin:0 0 6px}.pmpan h2{margin:0}
+.pmcust{display:flex;align-items:center;gap:12px;margin:2px 0 10px;font-size:15px}
+.pmhits{display:flex;flex-direction:column;gap:4px;margin:6px 0}
+.pmhit{font:inherit;text-align:left;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}.pmhit:hover{border-color:var(--navy)}
+.pmhit b{display:block}.pmhit small{color:var(--muted)}
+.pmseg{margin:4px 0 10px;flex-wrap:wrap}.pmseg button{padding:8px 12px}
+.pmrow{display:flex;gap:12px;flex-wrap:wrap}.pmrow .fld{flex:1;min-width:150px}
+.pmamt input{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.pmhd{display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px}
+.pmtab td{vertical-align:middle}.pmtab td.n{font-variant-numeric:tabular-nums}
+.pmtab .pmpay{width:110px;text-align:right;font-variant-numeric:tabular-nums;height:34px}
+.pmtab small{color:var(--muted);display:block;font-size:12px}
+.pmsum{font-size:14px;margin:10px 0 2px;line-height:1.5}.pmsum .bad{color:var(--red)}
+.acacts{margin-left:auto}.pmq{margin:0 0 0 auto}
+.actab tr.pmr{cursor:pointer}.actab tr.pmr.sel td{background:#FFF8E6}
+.actab tr.acheld td{color:var(--muted)}
+.pmdep{margin:0}.pmdep .inp{width:170px}.pmdk{grid-template-columns:repeat(3,1fr)}
+.acst{position:relative;display:inline-block;margin-right:8px}.acst summary{list-style:none;cursor:pointer}.acst summary::-webkit-details-marker{display:none}
+.acstm{position:absolute;right:0;top:calc(100% + 6px);background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:6px;z-index:20;box-shadow:0 8px 24px rgba(15,27,45,.12);min-width:220px}
+.acstm .btn{justify-content:flex-start;width:100%}

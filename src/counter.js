@@ -257,7 +257,8 @@ export function makeCounter(X) {
     }
     if (S.panel === 'complete') {
       return '<div class="ctmodal"><div class="card ctpan"><h2>Complete sale</h2><div class="ctkv tot"><b>Invoice total</b><b>' + $(pl.total) + '</b></div>' +
-        '<div class="seg"><button class="on" data-guide="counter-complete-charge">Charge to account</button></div>' +
+        '<div class="seg"><button class="' + (S.payNow ? '' : 'on') + '" data-ctpay="charge" data-guide="counter-complete-charge">Charge to account</button><button class="' + (S.payNow ? 'on' : '') + '" data-ctpay="now" data-guide="counter-complete-pay-now">Paid now</button></div>' +
+        (S.payNow ? '<p class="sm">After you post it, type what they paid (cash, check or card).</p>' : '') +
         '<p class="fmsg" id="ct-perr"></p><div class="rowr"><button class="btn" id="ct-pback" data-guide="counter-complete-back">Back</button>' +
         '<button class="btn amber" id="ct-post" data-guide="counter-complete-post"' + (S.busy ? ' disabled' : '') + '>Post invoice</button></div></div></div>';
     }
@@ -503,12 +504,16 @@ export function makeCounter(X) {
       if (!why) { q('#ct-perr').textContent = 'Pick what the manager should check, or type a note.'; return; }
       const r = await save('review', { why, lic_reason: isCredit() ? '' : licAuto(licWarn()) }); if (r) reset((isCredit() ? 'Credit sent for review · ' : 'Sent for review · ') + r.customer.name);
     });
+    $$('[data-ctpay]').forEach((b) => { b.onclick = () => { S.payNow = b.dataset.ctpay === 'now'; X.render(); }; });
     g('#ct-post', async () => {
       q('#ct-post').disabled = true;
       const r = await save('complete', { lic_reason: isCredit() ? '' : licAuto(licWarn()) });
       if (!r) { const b = q('#ct-post'); if (b) b.disabled = false; return; }
-      const susp = S.susp; A.ct = fresh(); A.ct.susp = susp; A.ct.step = 'done'; A.ct.done = { sale: r }; X.say('');
-      A.rvn = null; A.ivs = null; A.stoday = null; loadSusp(true); X.load(true); X.render();
+      const susp = S.susp, payNow = S.payNow && !isCredit(); A.ct = fresh(); A.ct.susp = susp; A.ct.step = 'done'; A.ct.done = { sale: r }; X.say('');
+      A.rvn = null; A.ivs = null; A.stoday = null; loadSusp(true); X.load(true);
+      if (payNow && X.openPay) X.openPay({ cust: { id: r.customer.id, name: r.customer.name }, from: 'counter', sale: { id: r.id, number: r.number, total: r.total },
+        onDone: (p) => { A.pay = null; if (!p) X.say('Invoice ' + r.number + ' charged to their account'); X.render(); } });
+      else X.render();
     });
   }
 

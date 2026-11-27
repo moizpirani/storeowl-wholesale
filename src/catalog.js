@@ -3,6 +3,7 @@
 // (wholesalers open it in front of customers), only behind "Show".
 // Typing never redraws: boxes keep their value in state on input and update the numbers around them in place.
 
+import { stmtModel, stmtHtml, stmtPdf, stmtName, STMT_CSS } from './statement.js';
 import { stateName } from './states.js';
 import {
   CATEGORIES, catName, TERMS, termName, LICENSES, licName, SIZE_NAMES, settingsOf, cleanUpc, upcShow, num, money, dollars, margin,
@@ -490,6 +491,12 @@ export function makeCatalog(X) {
     X.render();
     db.customer(A.cid, id).then((full) => { if (S.open === id) { gotCust(full, true); X.render(); } }).catch((e) => { X.say(e.message, true); X.render(); });
   }
+  // After a payment: fresh balance for the list and, if it's open, the customer's page.
+  function reloadCust(id) {
+    db.customer(A.cid, id).then((full) => { const S = A.cu; if (S && S.open === id) gotCust(full, true);
+      else { const i = (A.custs || []).findIndex((x) => x.id === id); if (i >= 0) { const sl = Object.assign({}, full); delete sl.notes; delete sl.history; A.custs[i] = sl; } }
+      X.render(); }).catch(() => { /* the list catches up next time */ });
+  }
   function gotCust(full, keepDrafts) {
     const S = A.cu;
     S.data = full;
@@ -518,8 +525,11 @@ export function makeCatalog(X) {
       '<div class="nav2"><button class="x" id="cu-prev" data-guide="customers-page-previous"' + (at <= 0 ? ' disabled' : '') + '>‹ Previous</button><button class="x" id="cu-next" data-guide="customers-page-next"' + (at < 0 || at >= list.length - 1 ? ' disabled' : '') + '>Next ›</button></div>' +
       (mgr && S.tab !== 'details' ? '<button class="btn" id="cu-edit" data-guide="customers-page-edit">Edit details</button>' : '') + '</div>';
     const used = c.credit_limit ? Math.min(100, Math.round((c.owes || 0) / c.credit_limit * 100)) : 0;
-    const kpis = '<div class="kpis"><div class="kb nv"><span>Owes</span><b>' + money$(c.owes || 0) + '</b><small>No open invoices</small></div>' +
-      '<div class="kb"><span>Past due · $0.00</span><div class="age"><div>0–30 days<b>$0</b></div><div>31–60<b>$0</b></div><div>61–90<b>$0</b></div><div>90+<b>$0</b></div></div></div>' +
+    const OI = oiFor(c.id), ag = OI ? OI.aging : null, w = (v) => (ag ? money$(v).replace(/\.00$/, '') : '…');
+    const nOpen = OI ? OI.invoices.length : null;
+    const owesSub = OI ? (nOpen ? nOpen + ' open ' + (nOpen === 1 ? 'invoice' : 'invoices') : (c.owes < -0.004 ? 'Store credit' : 'Nothing open')) + (OI.held ? ' · ' + money$(OI.held) + ' check waiting' : '') : '…';
+    const kpis = '<div class="kpis"><div class="kb nv"><span>Owes</span><b>' + money$(c.owes || 0) + '</b><small>' + esc(owesSub) + '</small></div>' +
+      '<div class="kb"><span>Past due · ' + (OI ? money$(OI.past_due) : '…') + '</span><div class="age"><div>1–30 days<b' + (ag && ag.d30 ? ' class="miss"' : '') + '>' + w(ag ? ag.d30 : 0) + '</b></div><div>31–60<b' + (ag && ag.d60 ? ' class="miss"' : '') + '>' + w(ag ? ag.d60 : 0) + '</b></div><div>61–90<b' + (ag && ag.d90 ? ' class="bad"' : '') + '>' + w(ag ? ag.d90 : 0) + '</b></div><div>90+<b' + (ag && ag.over ? ' class="bad"' : '') + '>' + w(ag ? ag.over : 0) + '</b></div></div></div>' +
       '<div class="kb"><span>Credit limit</span><b>' + (c.credit_limit != null ? money$(c.credit_limit) : 'None') + '</b>' + (c.credit_limit ? '<div class="cbar"><i style="width:' + used + '%"></i></div><small>' + used + '% used · ' + money$(c.credit_limit - (c.owes || 0)) + ' left</small>' : '<small>No limit set</small>') + '</div>' +
       '<div class="kb"><span>Terms</span><b class="smb2">' + esc(termName(c.terms)) + '</b><small>' + (licProblems(c, st, today(), home()).length ? '<span class="miss">A license needs a look</span>' : 'Licenses OK') + '</small></div>' +
       '<div class="kb"><span>Buys a week</span><b>—</b><small>No orders yet</small></div></div>';
@@ -724,7 +734,17 @@ export function makeCatalog(X) {
       '<div class="rowr tight"><button class="btn amber" id="cn-add" data-guide="customers-notes-add">Add note</button></div></div></div>' +
       '<div class="cc"><div class="ccb">' + (c.notes == null ? '<p class="emptyc in">Loading…</p>' : c.notes.length ? c.notes.map((n) => '<div class="note">' + esc(n.text) + '<small>' + esc(n.by) + ' · ' + esc(X.when(n.at)) + '</small></div>').join('') : '<p class="emptyc in">No notes yet</p>') + '</div></div>';
   }
-  // ---------- Invoices & payments: one customer's invoices, credit memos and voids by date (payments join in Phase 3) ----------
+  // What a customer still owes invoice by invoice, store credit and aging (for the boxes on top); loaded once per visit.
+  function oiFor(id) {
+    const S = A.cu;
+    if (S.oi && S.oi.id === id) return S.oi.d;
+    if (!S.oiLoading || S.oiLoading !== id) {
+      S.oiLoading = id; const cid = A.cid;
+      db.customerOpen(cid, id).then((d) => { if (A.cu.open !== id) return; A.cu.oi = { id, d }; A.cu.oiLoading = null; X.render(); }).catch(() => { A.cu.oiLoading = null; });
+    }
+    return null;
+  }
+  // ---------- Invoices & payments: one customer's invoices, credit memos, payments and voids by date ----------
   const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   function acRange(P) {
     const t = today(), d = new Date(t + 'T12:00:00');
@@ -747,18 +767,25 @@ export function makeCatalog(X) {
     db.customerAccount(cid, P.cust, f, t).then((d) => { if (A.cid !== cid || P.key !== key) return; P.data = d; if (A.cu.tab === 'account') X.render(); })
       .catch((e) => { if (P.key !== key) return; P.err = e.message; if (A.cu.tab === 'account') X.render(); });
   }
-  const AC_K = [['all', 'All'], ['invoice', 'Invoices'], ['credit', 'Credit memos'], ['void', 'Voids']];
+  const AC_K = [['all', 'All'], ['invoice', 'Invoices'], ['credit', 'Credit memos'], ['payment', 'Payments'], ['void', 'Voids']];
   const acKind = (r) => (r.status === 'void' ? 'void' : r.kind);
+  const PAYN = { cash: 'Cash', check: 'Check', card: 'Card', ach: 'Bank transfer', other: 'Other' };
   function custAcctHtml(c) {
     const P = acState(), [f, t] = acRange(P), D = P.data;
     const pres = [['month', 'This month'], ['last', 'Last month'], ['ninety', 'Last 90 days'], ['year', 'This year'], ['custom', 'Custom']];
     const top = '<div class="acbar"><div class="seg">' + pres.map(([k, n]) => '<button class="' + (P.pre === k ? 'on' : '') + '" data-acpre="' + k + '" data-guide="customers-account-dates">' + n + '</button>').join('') + '</div>' +
       (P.pre === 'custom' ? '<span class="acdt"><input type="date" class="inp" id="ac-from" value="' + esc(f) + '" data-guide="customers-account-from"><span>to</span><input type="date" class="inp" id="ac-to" value="' + esc(t) + '" data-guide="customers-account-to"></span>' :
-        '<span class="acwhen">' + esc(shortDate(f, true)) + ' – ' + esc(shortDate(t, true)) + '</span>') + '</div>';
+        '<span class="acwhen">' + esc(shortDate(f, true)) + ' – ' + esc(shortDate(t, true)) + '</span>') +
+      '<span class="acacts"><details class="acst"><summary class="btn" data-guide="customers-account-statement">Statement ▾</summary><div class="acstm">' +
+      '<button class="btn" id="ac-sprint" data-guide="customers-account-statement-print">Print</button><button class="btn" id="ac-spdf" data-guide="customers-account-statement-pdf">Download PDF</button>' +
+      '<button class="btn" id="ac-smail" data-guide="customers-account-statement-email">Email to ' + esc(((c.inv_email || c.email) || '').trim() || 'the store') + '</button></div></details>' +
+      '<button class="btn" id="ac-pay" data-guide="customers-account-take-payment">Take a payment</button></span></div>';
     if (P.err) return top + '<div class="cc"><p class="emptyc bad">' + esc(P.err) + '</p></div>';
     if (!D) return top + '<div class="cc"><p class="emptyc">Loading…</p></div>';
-    const rows = D.rows, live = rows.filter((r) => r.status === 'posted');
-    const inv = live.filter((r) => r.kind === 'invoice'), cr = live.filter((r) => r.kind === 'credit'), vo = rows.filter((r) => r.status === 'void');
+    const rows = D.rows.concat(D.payments || []).sort((x, y) => (x.date === y.date ? (x.kind === 'payment') - (y.kind === 'payment') || x.number - y.number : x.date < y.date ? -1 : 1));
+    const live = rows.filter((r) => r.status === 'posted');
+    const inv = live.filter((r) => r.kind === 'invoice'), cr = live.filter((r) => r.kind === 'credit'), pm = live.filter((r) => r.kind === 'payment'), vo = rows.filter((r) => r.status === 'void');
+    const held = rows.filter((r) => r.status === 'held');
     const sum = (l) => l.reduce((a, r) => a + r.total, 0);
     const end = Math.round((D.before + sum(live)) * 100) / 100;
     const dayBefore = ymd(new Date(new Date(f + 'T12:00:00').getTime() - 864e5));
@@ -766,26 +793,27 @@ export function makeCatalog(X) {
       '<div class="kb"><span>Owed ' + esc(shortDate(dayBefore)) + '</span><b>' + money$(D.before) + '</b><small>Before these dates</small></div>' +
       '<div class="kb"><span>Invoices</span><b>' + money$(sum(inv)) + '</b><small>' + inv.length + ' ' + (inv.length === 1 ? 'invoice' : 'invoices') + '</small></div>' +
       '<div class="kb"><span>Credit memos</span><b>' + money$(sum(cr)) + '</b><small>' + cr.length + ' ' + (cr.length === 1 ? 'credit' : 'credits') + (vo.length ? ' · ' + vo.length + ' void not counted' : '') + '</small></div>' +
-      '<div class="kb"><span>Payments</span><b class="mut">—</b><small>Come with Payments</small></div>' +
+      '<div class="kb"><span>Payments</span><b>' + money$(sum(pm)) + '</b><small>' + pm.length + ' ' + (pm.length === 1 ? 'payment' : 'payments') + (held.length ? ' · ' + held.length + ' post-dated waiting' : '') + '</small></div>' +
       '<div class="kb nv"><span>Owes ' + esc(shortDate(t)) + '</span><b>' + money$(end) + '</b><small>At the end of these dates</small></div></div>';
     const n = (k) => (k === 'all' ? rows.length : rows.filter((r) => acKind(r) === k).length);
     const chips = '<div class="acrow2"><div class="chips">' + AC_K.map(([k, nm]) => '<button class="chip' + (P.k === k ? ' on' : '') + '" data-ack="' + k + '" data-guide="customers-account-show">' + nm + ' · ' + n(k) + '</button>').join('') + '</div>' +
-      '<input class="inp acq" id="ac-q" type="search" placeholder="Find an invoice #" value="' + esc(P.q) + '" data-guide="customers-account-search"></div>';
+      '<input class="inp acq" id="ac-q" type="search" placeholder="Find an invoice or payment #" value="' + esc(P.q) + '" data-guide="customers-account-search"></div>';
     let bal = D.before;
-    const tag = (r) => r.status === 'void' ? '<span class="tag bad">Void</span>' : r.kind === 'credit' ? '<span class="tag crtag">Credit memo</span>' : '<span class="tag">Invoice</span>';
+    const tag = (r) => r.status === 'void' ? '<span class="tag bad">Void</span>' : r.status === 'held' ? '<span class="tag need">Post-dated</span>' : r.kind === 'credit' ? '<span class="tag crtag">Credit memo</span>' : r.kind === 'payment' ? '<span class="tag ok">Payment</span>' : '<span class="tag">Invoice</span>';
     const body = rows.map((r) => {
       if (r.status === 'posted') bal = Math.round((bal + r.total) * 100) / 100;
       const shown = P.k === 'all' || acKind(r) === P.k;
       const what = r.status === 'void' ? 'Voided ' + esc(shortDate(String(r.void_at || '').slice(0, 10))) + (r.void_by ? ' by ' + esc(r.void_by) : '') + (r.void_why ? ' · ' + esc(r.void_why) : '') :
+        r.kind === 'payment' ? esc(PAYN[r.method] || '') + (r.check_no ? ' #' + esc(r.check_no) : '') + (r.status === 'held' ? ' · dated ' + esc(shortDate(r.check_date)) + ', counts when deposited' : '') + (r.by ? ' · ' + esc(r.by) : '') :
         r.units + ' ' + (r.kind === 'credit' ? 'back' : (r.units === 1 ? 'item' : 'items')) + (r.by ? ' · ' + esc(r.by) : '');
-      return '<tr class="acr' + (r.status === 'void' ? ' acvoid' : '') + '" data-acopen="' + r.id + '" data-num="' + r.number + '"' + (shown ? '' : ' hidden') + '>' +
+      return '<tr class="acr' + (r.status === 'void' ? ' acvoid' : '') + (r.status === 'held' ? ' acheld' : '') + '" data-ack2="' + acKind(r) + '" data-acopen="' + r.id + '" data-ackind="' + r.kind + '" data-acdate="' + r.date + '" data-num="' + r.number + '"' + (shown ? '' : ' hidden') + '>' +
         '<td>' + esc(shortDate(r.date, true)) + '</td><td>' + tag(r) + '</td><td class="acnum">' + r.number + '</td><td class="acsub">' + what + '</td>' +
-        '<td class="n' + (r.total < 0 ? ' acneg' : '') + '">' + money$(r.total) + '</td><td class="n">' + (r.status === 'void' ? '<span class="mut">—</span>' : money$(bal)) + '</td><td class="n acgo">›</td></tr>';
+        '<td class="n' + (r.total < 0 ? ' acneg' : '') + '">' + money$(r.total) + '</td><td class="n">' + (r.status !== 'posted' ? '<span class="mut">—</span>' : money$(bal)) + '</td><td class="n acgo">›</td></tr>';
     }).join('');
     const table = '<div class="cc"><table class="t tsm actab"><thead><tr><th>Date</th><th>What</th><th>#</th><th></th><th class="n">Amount</th><th class="n">They owe</th><th></th></tr></thead><tbody id="ac-rows">' +
       '<tr class="acstart"><td>' + esc(shortDate(dayBefore, true)) + '</td><td colspan="4" class="acsub">Owed before ' + esc(shortDate(f)) + (D.opening && D.before === D.opening ? ' · starting balance from your old system' : '') + '</td><td class="n"><b>' + money$(D.before) + '</b></td><td></td></tr>' +
-      (rows.length ? body : '<tr><td colspan="7" class="empty">No invoices or credits in these dates</td></tr>') +
-      '</tbody></table><p class="fmsg" id="ac-none" hidden>No invoice with that number in these dates</p></div>';
+      (rows.length ? body : '<tr><td colspan="7" class="empty">Nothing in these dates</td></tr>') +
+      '</tbody></table><p class="fmsg" id="ac-none" hidden>Nothing with that number in these dates</p></div>';
     return top + boxes + chips + table;
   }
   function bindAcct() {
@@ -799,12 +827,34 @@ export function makeCatalog(X) {
     const box = q('#ac-q');
     const filt = () => {
       const v = box.value.replace(/\D/g, ''); P.q = box.value; let any = 0;
-      $$('#ac-rows tr.acr').forEach((r) => { const k = r.classList.contains('acvoid') ? 'void' : (r.querySelector('.crtag') ? 'credit' : 'invoice');
+      $$('#ac-rows tr.acr').forEach((r) => { const k = r.dataset.ack2;
         const ok = (P.k === 'all' || k === P.k) && (!v || String(r.dataset.num).includes(v)); r.hidden = !ok; if (ok) any++; });
       const nn = q('#ac-none'); if (nn) nn.hidden = !(v && !any);
     };
     if (box) { box.oninput = filt; if (P.q) filt(); }
-    $$('[data-acopen]').forEach((r) => { r.onclick = () => X.openInvoice && X.openInvoice(r.dataset.acopen); });
+    $$('[data-acopen]').forEach((r) => { r.onclick = () => (r.dataset.ackind === 'payment' ? X.openPayment && X.openPayment(r.dataset.acopen, r.dataset.acdate) : X.openInvoice && X.openInvoice(r.dataset.acopen)); });
+    const ap = q('#ac-pay'); if (ap) ap.onclick = () => X.openPay({ cust: { id: A.cu.data.id, name: A.cu.data.name }, from: 'customer' });
+    const stM = () => { const [f, t] = acRange(P); return stmtModel({ co: co(), cust: A.cu.data, acct: P.data, from: f, to: t, today: today() }); };
+    const spr = q('#ac-sprint');
+    if (spr) spr.onclick = () => {
+      if (!P.data) return;
+      let box = document.getElementById('printout');
+      if (!box) { box = document.createElement('div'); box.id = 'printout'; document.body.appendChild(box); }
+      box.innerHTML = '<style>@media screen{#printout{display:none}}@media print{body>*:not(#printout){display:none!important}#printout{display:block}}' + STMT_CSS + '</style>' + stmtHtml(stM());
+      try { if (typeof window.print === 'function' && !/jsdom/i.test(navigator.userAgent)) window.print(); } catch (e) { /* the page still has it */ }
+    };
+    const spd = q('#ac-spdf');
+    if (spd) spd.onclick = () => {
+      if (!P.data) return; const M = stM(), blob = new Blob([stmtPdf(M).bytes], { type: 'application/pdf' }), a = document.createElement('a');
+      try { a.href = URL.createObjectURL(blob); } catch (e) { return; }
+      a.download = stmtName(M); document.body.appendChild(a); a.click(); a.remove();
+    };
+    const sml = q('#ac-smail');
+    if (sml) sml.onclick = async () => {
+      const [f, t] = acRange(P); sml.disabled = true;
+      try { const r = await db.sendStatement(A.cid, A.cu.data.id, f, t); X.say('✓ Statement emailed to ' + r.to); X.render(); }
+      catch (e) { sml.disabled = false; X.say(e.message, true); X.render(); }
+    };
   }
   function custHistHtml(c) {
     const say1 = (x) => {
@@ -1033,5 +1083,5 @@ export function makeCatalog(X) {
     };
   }
 
-  return { load, itemsHtml, bindItems, custHtml, bindCust, levelsHtml, bindLevels, licRulesHtml, bindLicRules, openCust };
+  return { load, itemsHtml, bindItems, custHtml, bindCust, levelsHtml, bindLevels, licRulesHtml, bindLicRules, openCust, reloadCust };
 }

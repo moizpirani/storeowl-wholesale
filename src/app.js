@@ -9,6 +9,7 @@ import { STATES, stateName, neighborsOf, cleanStates, statesLine } from './state
 import { makeCatalog } from './catalog.js';
 import { makeImport } from './importui.js';
 import { makeCounter } from './counter.js';
+import { makePayments } from './payments.js';
 import { custIssues, itemIssues, settingsOf, todayIso, licName, licProblems } from './rules.js';
 
 const IC = {
@@ -33,9 +34,9 @@ export const MENU = [
   { k: 'invoices', n: 'Invoices' },
   { k: 'customers', n: 'Customers' },
   { k: 'items', n: 'Items' },
-  { k: 'payments', n: 'Payments', phase: 3 },
+  { k: 'payments', n: 'Payments' },
   { k: 'compliance', n: 'Compliance', phase: 7 },
-  { k: 'reports', n: 'Reports', phase: 3 },
+  { k: 'reports', n: 'Reports', phase: 4 },
   { k: 'settings', n: 'Settings' }
 ];
 const ROLE = { owner: 'Owner', manager: 'Manager', staff: 'Staff' };
@@ -67,9 +68,11 @@ export function startApp(root, db) {
   const isMgr = () => ['owner', 'manager'].includes((co() || {}).role);
   const cat = makeCatalog({ A, db, root, esc, opt, stateOptions, co, isMgr, isOwner, when,
     render: () => render(), say: (m, b) => say(m, b), replaceCo: (c) => replaceCo(c), startImport: (k) => imp.start(k, k),
-    openInvoice: (id) => { A.view = 'invoices'; A.ivs = null; A.ivWant = id; render(); } });
+    openInvoice: (id) => { A.view = 'invoices'; A.ivs = null; A.ivWant = id; render(); }, openPay: (o) => pay.open(o),
+    openPayment: (id, d) => { A.view = 'payments'; pay.show(id, d); } });
   const loadAll = () => Promise.all([db.items(A.cid), db.customers(A.cid)]).then(([i, c]) => { A.items = i; A.custs = c; }).catch(() => { A.items = A.items || []; A.custs = A.custs || []; });
-  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c) });
+  const ctr = makeCounter({ A, db, root, esc, opt, co, isMgr, isOwner, when, render: () => render(), say: (m, b) => say(m, b), load: (f) => cat.load(f), openCust: (id, tab) => { A.view = 'customers'; cat.openCust(id, tab); }, replaceCo: (c) => replaceCo(c), openPay: (o) => pay.open(o) });
+  const pay = makePayments({ A, db, root, esc, co, isMgr, when, render: () => render(), say: (m, b) => say(m, b), reloadCust: (id) => cat.reloadCust(id) });
   const imp = makeImport({ A, db, root, esc, opt, co, isMgr, when, loadAll, render: () => render(), say: (m, b) => say(m, b), reload: () => cat.load(true) });
 
   async function boot() {
@@ -260,9 +263,10 @@ export function startApp(root, db) {
     else if (A.view === 'review') page = ctr.reviewHtml();
     else if (A.view === 'invoices') page = ctr.invoicesHtml();
     else if (A.view === 'barcodes') page = ctr.bcHtml();
+    else if (A.view === 'payments') page = pay.html();
     else page = '<h1>' + m.n + '</h1><div class="card soon"><b>Not built yet</b><span>Comes in Phase ' + m.phase + ' of the build plan.</span></div>';
     const toast = A.msg ? '<div class="toast' + (A.bad ? ' bad' : '') + '" role="status">' + esc(A.msg) + '<button id="toast-x" aria-label="Close" data-guide="common-message-close">×</button></div>' : '';
-    return rail + '<div class="shell">' + top + '<main class="page">' + page + '</main></div>' + toast;
+    return rail + '<div class="shell">' + top + '<main class="page">' + page + '</main></div>' + pay.modalHtml() + toast;
   }
   function onMenu() { return A.view === 'import' ? (A.im && A.im.kind) || 'items' : A.view === 'barcodes' ? 'items' : A.view; }
   function bindOffice() {
@@ -271,6 +275,7 @@ export function startApp(root, db) {
       if (b.dataset.go === 'counter' && A.ct && A.ct.step !== 'sale') { A.ct.step = 'home'; A.ct.done = null; }
       if (b.dataset.go === 'review') A.rv = null;
       if (b.dataset.go === 'invoices') A.ivs = null;
+      if (b.dataset.go === 'payments' && A.pm) { A.pm.data = null; A.pm.key = ''; A.pm.sel = null; }
       const C = A.cu;
       if (C && C.open && (C.open === 'new' || JSON.stringify(C.ed) !== C.orig || (C.led && JSON.stringify(C.led) !== C.lorig)) && !window.confirm('Your changes to this customer aren’t saved. Leave without saving?')) return;
       const I = A.it;
@@ -291,6 +296,8 @@ export function startApp(root, db) {
     if (A.view === 'review') ctr.bindReview();
     if (A.view === 'invoices') ctr.bindInvoices();
     if (A.view === 'barcodes') ctr.bindBc();
+    if (A.view === 'payments') pay.bind();
+    pay.bindModal();
     ctr.loadReviewCount();
   }
 

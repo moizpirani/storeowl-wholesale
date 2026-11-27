@@ -346,3 +346,40 @@ export function creditCheck(cr) {
   const nr = cr.lines.find((l) => !l.reason); if (nr) return 'Pick why ' + (nr.other ? 'the credit is given' : nr.name + ' came back') + '.';
   return '';
 }
+
+// ---------- Phase 3: payments, open invoices, store credit, aging (same rules as _open_items in the database) ----------
+export const PAY_METHODS = [['cash', 'Cash'], ['check', 'Check'], ['card', 'Card'], ['ach', 'Bank transfer'], ['other', 'Other']];
+export const payMethod = (k) => (PAY_METHODS.find((m) => m[0] === k) || ['', '—'])[1];
+export const dueDays = (t) => ({ net7: 7, net10: 10, net14: 14, net30: 30 }[t] || 0);
+const r2 = (v) => Math.round(v * 100) / 100;
+const dayN = (iso) => Math.floor(new Date(String(iso).slice(0, 10) + 'T12:00:00Z').getTime() / 864e5);
+export const addDays = (iso, n) => new Date((dayN(iso) + n) * 864e5).toISOString().slice(0, 10);
+// cust {id, opening, terms, created_at}; sales / pays / applies for that customer.
+export function openItems(cust, sales, pays, applies, today) {
+  const posted = (id) => sales.find((s) => s.id === id && s.status === 'posted');
+  const payOk = (id) => pays.find((p) => p.id === id && p.status === 'posted');
+  const live = applies.filter((a) => (!a.from_pay || payOk(a.from_pay)) && (!a.from_sale || posted(a.from_sale)) && (!a.to_sale || posted(a.to_sale)));
+  const sum = (l) => r2(l.reduce((a, x) => a + Number(x.amount), 0));
+  const t = dayN(today), d = dueDays(cust.terms);
+  const op = r2((cust.opening || 0) - sum(live.filter((a) => !a.to_sale)));
+  const opd = String(cust.created_at || today).slice(0, 10);
+  const invoices = [];
+  if (op > 0.004) invoices.push({ id: null, number: null, opening: true, date: opd, due: opd, total: cust.opening, paid: r2(cust.opening - op), open: op, late: Math.max(0, t - dayN(opd)) });
+  sales.filter((s) => s.status === 'posted' && (s.kind || 'invoice') === 'invoice').sort((a, b) => (a.invoice_date === b.invoice_date ? a.number - b.number : a.invoice_date < b.invoice_date ? -1 : 1)).forEach((s) => {
+    const paid = sum(live.filter((a) => a.to_sale === s.id)), open = r2(s.total - paid), due = addDays(s.invoice_date, d);
+    if (open > 0.004) invoices.push({ id: s.id, number: s.number, date: s.invoice_date, due, total: s.total, paid, open, late: Math.max(0, t - dayN(due)) });
+  });
+  const credits = [];
+  if (op < -0.004) credits.push({ kind: 'opening', id: null, number: null, date: opd, left: -op });
+  sales.filter((s) => s.status === 'posted' && s.kind === 'credit').forEach((s) => { const left = r2(-s.total - sum(live.filter((a) => a.from_sale === s.id))); if (left > 0.004) credits.push({ kind: 'credit', id: s.id, number: s.number, date: s.invoice_date, left }); });
+  pays.filter((p) => p.status === 'posted').forEach((p) => { const left = r2(p.amount - sum(live.filter((a) => a.from_pay === p.id))); if (left > 0.004) credits.push({ kind: 'payment', id: p.id, number: p.number, date: p.received, left }); });
+  const ag = { current: 0, d30: 0, d60: 0, d90: 0, over: 0 };
+  invoices.forEach((x) => { const k = x.late === 0 ? 'current' : x.late <= 30 ? 'd30' : x.late <= 60 ? 'd60' : x.late <= 90 ? 'd90' : 'over'; ag[k] = r2(ag[k] + x.open); });
+  return { invoices, credits, aging: ag, past_due: r2(ag.d30 + ag.d60 + ag.d90 + ag.over), store_credit: r2(credits.reduce((a, x) => a + x.left, 0)),
+    held: r2(pays.filter((p) => p.status === 'held').reduce((a, p) => a + p.amount, 0)) };
+}
+// Fill a payment over the open invoices, oldest first (what the screen suggests; anyone can change it).
+export function fillOldest(invoices, amount) {
+  let left = r2(Number(amount) || 0);
+  return invoices.map((x) => { const take = r2(Math.min(left, x.open)); left = r2(left - take); return take; });
+}

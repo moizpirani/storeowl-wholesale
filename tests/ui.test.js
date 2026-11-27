@@ -69,8 +69,9 @@ test('sign in → set up a company → Home → Settings', async () => {
   assert.deepEqual(db.S.companies[0].others, ['KY']);
 
   // Unbuilt pages say which phase brings them.
-  $('[data-go="payments"]').click(); await tick();
-  assert.match($('#app').textContent, /Phase 3/); checkTags('payments (not built)');
+  $('[data-go="compliance"]').click(); await tick();
+  assert.match($('#app').textContent, /Phase 7/); checkTags('compliance (not built)');
+  $('[data-go="payments"]').click(); await tick(); checkTags('payments');
   $('[data-go="counter"]').click(); await tick(); await tick();
   assert.match($('#app').textContent, /New sale/); checkTags('counter');
 
